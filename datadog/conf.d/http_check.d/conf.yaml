@@ -1,0 +1,12 @@
+# Datadog Agent tự kiểm tra API backend mỗi 15 giây -> metric network.http.* và service check http.can_connect
+init_config:
+
+instances:
+  - name: agriguard-backend-health
+    url: http://backend:8000/api/health
+    timeout: 5
+    min_collection_interval: 15
+    content_match: '"mongo":"ok"'
+    tags:
+      - app:agriguard
+      - service:agriguard-backend

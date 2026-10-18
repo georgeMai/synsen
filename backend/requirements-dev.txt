@@ -1,0 +1,3 @@
+-r requirements.txt
+pytest>=8
+mongomock>=4.1      # chỉ dùng cho MONGODB_URI=memory:// khi chạy thử không có MongoDB

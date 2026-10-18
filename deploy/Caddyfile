@@ -1,0 +1,15 @@
+# Caddy tự xin chứng chỉ HTTPS (Let's Encrypt) cho API_DOMAIN (vd. synsen.net)
+#   https://synsen.net/            -> chuyển sang /agriguard/
+#   https://synsen.net/agriguard/  -> web + API AgriGuard (bỏ tiền tố trước khi vào backend)
+#   https://synsen.net/api/...     -> API trực tiếp (webhook Datadog, script)
+{$API_DOMAIN} {
+	encode gzip
+	redir / /agriguard/
+	redir /agriguard /agriguard/
+	handle_path /agriguard/* {
+		reverse_proxy backend:8000
+	}
+	handle {
+		reverse_proxy backend:8000
+	}
+}

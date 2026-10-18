@@ -1,0 +1,12 @@
+# secrets
+.env
+firmware/**/secrets.h
+# python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+# build
+.pio/
+build/
+*.zip

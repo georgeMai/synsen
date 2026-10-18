@@ -1,0 +1,308 @@
+[
+  {
+    "name": "[AgriGuard] Thiết bị mất kết nối",
+    "type": "query alert",
+    "query": "max(last_1m):max:agriguard.device.online{*} by {device_id} < 1",
+    "message": "{{#is_alert}}🚨 **Thiết bị mất kết nối** trên `{{device_id.name}}`\n\n**Điều tra:** Xem `agriguard.device.rssi`, `device.wifi_reconnects` và log LWT của thiết bị; nếu mọi thiết bị cùng mất thì kiểm tra broker MQTT (`tcp.can_connect`).\n\n**Khắc phục:** Kiểm tra nguồn điện/Wi‑Fi của ESP32.{{/is_alert}}\n{{#is_recovery}}✅ Thiết bị mất kết nối – tín hiệu đã trở lại bình thường. Xác nhận khắc phục trên web AgriGuard để hệ thống kiểm chứng và đóng sự cố.{{/is_recovery}}\n\nDashboard: AgriGuard – IoT Irrigation Operations @webhook-agriguard",
+    "priority": 1,
+    "tags": [
+      "app:agriguard",
+      "incident_type:device_offline",
+      "team:agriguard"
+    ],
+    "options": {
+      "notify_audit": false,
+      "include_tags": true,
+      "require_full_window": false,
+      "notify_no_data": true,
+      "renotify_interval": 0,
+      "thresholds": {
+        "critical": 1
+      },
+      "no_data_timeframe": 5
+    }
+  },
+  {
+    "name": "[AgriGuard] Bơm chạy khô / tắc ống",
+    "type": "query alert",
+    "query": "min(last_1m):max:agriguard.pump.lockout{*} by {device_id} + (min:agriguard.pump.state{*} by {device_id} - max:agriguard.flow.rate{*} by {device_id}) > 0.7",
+    "message": "{{#is_alert}}🚨 **Bơm chạy khô / tắc ống** trên `{{device_id.name}}`\n\n**Điều tra:** So sánh `agriguard.pump.state` với `agriguard.flow.rate`; xem lệnh bơm trong log (command_id).\n\n**Khắc phục:** Châm nước vào bể / thông ống hút, sau đó bấm “Đã xử lý” – hệ thống sẽ chạy thử bơm 45 giây.{{/is_alert}}\n{{#is_recovery}}✅ Bơm chạy khô / tắc ống – tín hiệu đã trở lại bình thường. Xác nhận khắc phục trên web AgriGuard để hệ thống kiểm chứng và đóng sự cố.{{/is_recovery}}\n\nDashboard: AgriGuard – IoT Irrigation Operations @webhook-agriguard",
+    "priority": 1,
+    "tags": [
+      "app:agriguard",
+      "incident_type:pump_dry_run",
+      "team:agriguard"
+    ],
+    "options": {
+      "notify_audit": false,
+      "include_tags": true,
+      "require_full_window": false,
+      "notify_no_data": false,
+      "renotify_interval": 0,
+      "thresholds": {
+        "critical": 0.7
+      }
+    }
+  },
+  {
+    "name": "[AgriGuard] Có dòng chảy khi bơm tắt (relay kẹt / rò)",
+    "type": "query alert",
+    "query": "min(last_1m):max:agriguard.flow.rate{*} by {device_id} - max:agriguard.pump.state{*} by {device_id} * 10 > 0.3",
+    "message": "{{#is_alert}}🚨 **Có dòng chảy khi bơm tắt** trên `{{device_id.name}}`\n\n**Điều tra:** `agriguard.flow.rate` > 0 trong khi `agriguard.pump.state` = 0 → relay dính hoặc rò nước.\n\n**Khắc phục:** Ngắt nguồn bơm, kiểm tra relay và đường ống.{{/is_alert}}\n{{#is_recovery}}✅ Có dòng chảy khi bơm tắt – tín hiệu đã trở lại bình thường. Xác nhận khắc phục trên web AgriGuard để hệ thống kiểm chứng và đóng sự cố.{{/is_recovery}}\n\nDashboard: AgriGuard – IoT Irrigation Operations @webhook-agriguard",
+    "priority": 1,
+    "tags": [
+      "app:agriguard",
+      "incident_type:flow_without_pump",
+      "team:agriguard"
+    ],
+    "options": {
+      "notify_audit": false,
+      "include_tags": true,
+      "require_full_window": false,
+      "notify_no_data": false,
+      "renotify_interval": 0,
+      "thresholds": {
+        "critical": 0.3
+      }
+    }
+  },
+  {
+    "name": "[AgriGuard] Cảm biến DHT11 lỗi",
+    "type": "query alert",
+    "query": "max(last_2m):max:agriguard.sensor.ok{sensor:dht11} by {device_id} < 1",
+    "message": "{{#is_alert}}🚨 **Cảm biến DHT11 lỗi** trên `{{device_id.name}}`\n\n**Điều tra:** Xem `agriguard.sensor.ok{sensor:dht11}` và `dht_errors_total`.\n\n**Khắc phục:** Kiểm tra dây DATA (GPIO4) và nguồn 3.3V.{{/is_alert}}\n{{#is_recovery}}✅ Cảm biến DHT11 lỗi – tín hiệu đã trở lại bình thường. Xác nhận khắc phục trên web AgriGuard để hệ thống kiểm chứng và đóng sự cố.{{/is_recovery}}\n\nDashboard: AgriGuard – IoT Irrigation Operations @webhook-agriguard",
+    "priority": 2,
+    "tags": [
+      "app:agriguard",
+      "incident_type:dht_fault",
+      "team:agriguard"
+    ],
+    "options": {
+      "notify_audit": false,
+      "include_tags": true,
+      "require_full_window": false,
+      "notify_no_data": false,
+      "renotify_interval": 0,
+      "thresholds": {
+        "critical": 1
+      }
+    }
+  },
+  {
+    "name": "[AgriGuard] Cảm biến độ ẩm đất lỗi",
+    "type": "query alert",
+    "query": "max(last_2m):max:agriguard.sensor.ok{sensor:soil} by {device_id} < 1",
+    "message": "{{#is_alert}}🚨 **Cảm biến độ ẩm đất lỗi** trên `{{device_id.name}}`\n\n**Điều tra:** `agriguard.soil.raw` ≈ 0 hoặc 4095 → tuột dây/hở mạch.\n\n**Khắc phục:** Cắm lại dây AO (GPIO34).{{/is_alert}}\n{{#is_recovery}}✅ Cảm biến độ ẩm đất lỗi – tín hiệu đã trở lại bình thường. Xác nhận khắc phục trên web AgriGuard để hệ thống kiểm chứng và đóng sự cố.{{/is_recovery}}\n\nDashboard: AgriGuard – IoT Irrigation Operations @webhook-agriguard",
+    "priority": 2,
+    "tags": [
+      "app:agriguard",
+      "incident_type:soil_sensor_fault",
+      "team:agriguard"
+    ],
+    "options": {
+      "notify_audit": false,
+      "include_tags": true,
+      "require_full_window": false,
+      "notify_no_data": false,
+      "renotify_interval": 0,
+      "thresholds": {
+        "critical": 1
+      }
+    }
+  },
+  {
+    "name": "[AgriGuard] Cảm biến độ ẩm đất bị đơ",
+    "type": "query alert",
+    "query": "max(last_1m):max:agriguard.fault.active{fault:soil_sensor_stuck} by {device_id} >= 1",
+    "message": "{{#is_alert}}🚨 **Cảm biến đất bị đơ** trên `{{device_id.name}}`\n\n**Điều tra:** `agriguard.soil.raw` không đổi trong 10 phút.\n\n**Khắc phục:** Kiểm tra/thay cảm biến.{{/is_alert}}\n{{#is_recovery}}✅ Cảm biến đất bị đơ – tín hiệu đã trở lại bình thường. Xác nhận khắc phục trên web AgriGuard để hệ thống kiểm chứng và đóng sự cố.{{/is_recovery}}\n\nDashboard: AgriGuard – IoT Irrigation Operations @webhook-agriguard",
+    "priority": 3,
+    "tags": [
+      "app:agriguard",
+      "incident_type:soil_sensor_stuck",
+      "team:agriguard"
+    ],
+    "options": {
+      "notify_audit": false,
+      "include_tags": true,
+      "require_full_window": false,
+      "notify_no_data": false,
+      "renotify_interval": 0,
+      "thresholds": {
+        "critical": 1
+      }
+    }
+  },
+  {
+    "name": "[AgriGuard] Phun sương không hiệu quả",
+    "type": "query alert",
+    "query": "max(last_1m):max:agriguard.fault.active{fault:mist_ineffective} by {device_id} >= 1",
+    "message": "{{#is_alert}}🚨 **Phun sương không làm tăng độ ẩm** trên `{{device_id.name}}`\n\n**Điều tra:** So sánh `agriguard.mist.state` với `agriguard.air.humidity`.\n\n**Khắc phục:** Châm nước cho máy phun sương, sau đó bấm “Đã xử lý” để chạy thử.{{/is_alert}}\n{{#is_recovery}}✅ Phun sương không làm tăng độ ẩm – tín hiệu đã trở lại bình thường. Xác nhận khắc phục trên web AgriGuard để hệ thống kiểm chứng và đóng sự cố.{{/is_recovery}}\n\nDashboard: AgriGuard – IoT Irrigation Operations @webhook-agriguard",
+    "priority": 2,
+    "tags": [
+      "app:agriguard",
+      "incident_type:mist_ineffective",
+      "team:agriguard"
+    ],
+    "options": {
+      "notify_audit": false,
+      "include_tags": true,
+      "require_full_window": false,
+      "notify_no_data": false,
+      "renotify_interval": 0,
+      "thresholds": {
+        "critical": 1
+      }
+    }
+  },
+  {
+    "name": "[AgriGuard] Bơm/phun sương chạy quá thời gian",
+    "type": "query alert",
+    "query": "max(last_1m):max:agriguard.fault.active{fault:pump_overrun} by {device_id} + max:agriguard.fault.active{fault:mist_overrun} by {device_id} >= 1",
+    "message": "{{#is_alert}}🚨 **Thiết bị chấp hành chạy quá lâu** trên `{{device_id.name}}`\n\n**Điều tra:** Xem `pump.state`/`mist.state` và các lệnh tắt có được ack không.\n\n**Khắc phục:** Tắt bằng tay trên web, kiểm tra cảm biến đất.{{/is_alert}}\n{{#is_recovery}}✅ Thiết bị chấp hành chạy quá lâu – tín hiệu đã trở lại bình thường. Xác nhận khắc phục trên web AgriGuard để hệ thống kiểm chứng và đóng sự cố.{{/is_recovery}}\n\nDashboard: AgriGuard – IoT Irrigation Operations @webhook-agriguard",
+    "priority": 3,
+    "tags": [
+      "app:agriguard",
+      "incident_type:pump_overrun",
+      "team:agriguard"
+    ],
+    "options": {
+      "notify_audit": false,
+      "include_tags": true,
+      "require_full_window": false,
+      "notify_no_data": false,
+      "renotify_interval": 0,
+      "thresholds": {
+        "critical": 1
+      }
+    }
+  },
+  {
+    "name": "[AgriGuard] Thiết bị không xác nhận lệnh",
+    "type": "query alert",
+    "query": "sum(last_5m):sum:agriguard.command.timeout{*} by {device_id}.as_count() > 0",
+    "message": "{{#is_alert}}🚨 **Lệnh điều khiển không được xác nhận** trên `{{device_id.name}}`\n\n**Điều tra:** Xem `agriguard.command.ack_latency_ms` và log `Command not acknowledged` (command_id).\n\n**Khắc phục:** Khởi động lại ESP32 nếu treo.{{/is_alert}}\n{{#is_recovery}}✅ Lệnh điều khiển không được xác nhận – tín hiệu đã trở lại bình thường. Xác nhận khắc phục trên web AgriGuard để hệ thống kiểm chứng và đóng sự cố.{{/is_recovery}}\n\nDashboard: AgriGuard – IoT Irrigation Operations @webhook-agriguard",
+    "priority": 2,
+    "tags": [
+      "app:agriguard",
+      "incident_type:command_timeout",
+      "team:agriguard"
+    ],
+    "options": {
+      "notify_audit": false,
+      "include_tags": true,
+      "require_full_window": false,
+      "notify_no_data": false,
+      "renotify_interval": 0,
+      "thresholds": {
+        "critical": 0
+      }
+    }
+  },
+  {
+    "name": "[AgriGuard] ESP32 khởi động lại do sụt áp",
+    "type": "query alert",
+    "query": "sum(last_10m):sum:agriguard.device.reboots{reset_reason:brownout} by {device_id}.as_count() > 0",
+    "message": "{{#is_alert}}🚨 **ESP32 reset do brownout** trên `{{device_id.name}}`\n\n**Điều tra:** `agriguard.device.uptime` về 0 ngay sau khi bơm bật.\n\n**Khắc phục:** Thêm tụ 1000µF, dùng nguồn 5V 3A.{{/is_alert}}\n{{#is_recovery}}✅ ESP32 reset do brownout – tín hiệu đã trở lại bình thường. Xác nhận khắc phục trên web AgriGuard để hệ thống kiểm chứng và đóng sự cố.{{/is_recovery}}\n\nDashboard: AgriGuard – IoT Irrigation Operations @webhook-agriguard",
+    "priority": 3,
+    "tags": [
+      "app:agriguard",
+      "incident_type:power_brownout",
+      "team:agriguard"
+    ],
+    "options": {
+      "notify_audit": false,
+      "include_tags": true,
+      "require_full_window": false,
+      "notify_no_data": false,
+      "renotify_interval": 0,
+      "thresholds": {
+        "critical": 0
+      }
+    }
+  },
+  {
+    "name": "[AgriGuard] Đường ống dữ liệu chậm (p95 > 5s)",
+    "type": "query alert",
+    "query": "avg(last_5m):avg:agriguard.ingest.latency_ms.95percentile{*} > 5000",
+    "message": "{{#is_alert}}🚨 **Độ trễ ingest p95 vượt SLO** trên `{{device_id.name}}`\n\n**Điều tra:** Xem `agriguard.ingest.latency_ms`, `agriguard.mongo.write_latency_ms` và APM trace của backend.\n\n**Khắc phục:** Kiểm tra mạng của thiết bị / tải MongoDB.{{/is_alert}}\n{{#is_recovery}}✅ Độ trễ ingest p95 vượt SLO – tín hiệu đã trở lại bình thường. Xác nhận khắc phục trên web AgriGuard để hệ thống kiểm chứng và đóng sự cố.{{/is_recovery}}\n\nDashboard: AgriGuard – IoT Irrigation Operations @webhook-agriguard",
+    "priority": 2,
+    "tags": [
+      "app:agriguard",
+      "incident_type:ingest_latency",
+      "team:agriguard"
+    ],
+    "options": {
+      "notify_audit": false,
+      "include_tags": true,
+      "require_full_window": false,
+      "notify_no_data": false,
+      "renotify_interval": 0,
+      "thresholds": {
+        "critical": 5000,
+        "warning": 3000
+      }
+    }
+  },
+  {
+    "name": "[AgriGuard] Lượng bản tin cảm biến bất thường",
+    "type": "query alert",
+    "query": "avg(last_15m):anomalies(sum:agriguard.ingest.messages{*}.as_count(), 'basic', 2) >= 1",
+    "message": "{{#is_alert}}🚨 **Số bản tin MQTT nhận được bất thường** trên `{{device_id.name}}`\n\n**Điều tra:** So sánh `agriguard.mqtt.messages_received` theo kind.\n\n**Khắc phục:** Kiểm tra thiết bị gửi trùng/thiếu.{{/is_alert}}\n{{#is_recovery}}✅ Số bản tin MQTT nhận được bất thường – tín hiệu đã trở lại bình thường. Xác nhận khắc phục trên web AgriGuard để hệ thống kiểm chứng và đóng sự cố.{{/is_recovery}}\n\nDashboard: AgriGuard – IoT Irrigation Operations ",
+    "priority": 3,
+    "tags": [
+      "app:agriguard",
+      "incident_type:ingest_anomaly",
+      "team:agriguard"
+    ],
+    "options": {
+      "notify_audit": false,
+      "include_tags": true,
+      "require_full_window": false,
+      "notify_no_data": false,
+      "renotify_interval": 0,
+      "thresholds": {
+        "critical": 1
+      }
+    }
+  },
+  {
+    "name": "[AgriGuard] Backend API không phản hồi",
+    "type": "service check",
+    "query": "\"http.can_connect\".over(\"instance:agriguard-backend-health\").by(\"*\").last(3).count_by_status()",
+    "message": "🚨 Backend AgriGuard không trả lời /api/health (hoặc MongoDB lỗi). Xem log service:agriguard-backend.",
+    "priority": 1,
+    "tags": [
+      "app:agriguard",
+      "incident_type:backend_down",
+      "team:agriguard"
+    ],
+    "options": {
+      "thresholds": {
+        "critical": 2,
+        "ok": 1
+      },
+      "notify_no_data": true,
+      "no_data_timeframe": 5
+    }
+  },
+  {
+    "name": "[AgriGuard] Broker MQTT không nhận kết nối",
+    "type": "service check",
+    "query": "\"tcp.can_connect\".over(\"instance:agriguard-mosquitto\").by(\"*\").last(3).count_by_status()",
+    "message": "🚨 Mosquitto không nhận kết nối TCP 1883 – mọi thiết bị sẽ mất kết nối. Xem log service:agriguard-mqtt.",
+    "priority": 1,
+    "tags": [
+      "app:agriguard",
+      "incident_type:mqtt_down",
+      "team:agriguard"
+    ],
+    "options": {
+      "thresholds": {
+        "critical": 2,
+        "ok": 1
+      },
+      "notify_no_data": true,
+      "no_data_timeframe": 5
+    }
+  }
+]

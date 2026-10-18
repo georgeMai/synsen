@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AgriGuard – Giám sát tưới tiêu</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M16 3c5 7 9 11 9 16a9 9 0 0 1-18 0c0-5 4-9 9-16z' fill='%231f8a4c'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M16 3c5 7 9 11 9 16a9 9 0 0 1-18 0c0-5 4-9 9-16z"/></svg>
+    <div>
+      <strong>AgriGuard</strong>
+      <span id="site-name" class="muted">Giám sát tưới tiêu thời gian thực</span>
+    </div>
+  </div>
+  <nav class="devices" id="device-tabs" aria-label="Thiết bị"></nav>
+  <div class="top-right">
+    <span class="pill" id="sys-status" title="Trạng thái hệ thống">…</span>
+    <span class="clock" id="clock"></span>
+    <button class="ghost" id="token-btn" title="Nhập token quản trị">🔑</button>
+  </div>
+</header>
+
+<div id="banner" class="banner" hidden></div>
+
+<main>
+  <section class="grid kpis" id="kpis" aria-label="Chỉ số hiện tại"></section>
+
+  <section class="grid two">
+    <article class="card actuator" id="act-pump"></article>
+    <article class="card actuator" id="act-mist"></article>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <h2>Biểu đồ</h2>
+      <div class="seg" id="range" role="group" aria-label="Khoảng thời gian">
+        <button data-min="15">15 phút</button>
+        <button data-min="60" class="on">1 giờ</button>
+        <button data-min="360">6 giờ</button>
+        <button data-min="1440">24 giờ</button>
+      </div>
+    </div>
+    <div class="today" id="today"></div>
+    <div class="charts">
+      <figure><figcaption>Nhiệt độ không khí <span class="muted">(°C) · vùng tô: phun sương đang chạy</span></figcaption><div class="chart" id="ch-temp"></div></figure>
+      <figure><figcaption>Độ ẩm không khí <span class="muted">(%) · vùng tô: phun sương đang chạy</span></figcaption><div class="chart" id="ch-hum"></div></figure>
+      <figure><figcaption>Độ ẩm đất <span class="muted">(%) · nét đứt: ngưỡng khô / ngưỡng đủ · vùng tô: bơm chạy</span></figcaption><div class="chart" id="ch-soil"></div></figure>
+      <figure><figcaption>Lưu lượng nước <span class="muted">(L/phút) · vùng tô: bơm chạy</span></figcaption><div class="chart" id="ch-flow"></div></figure>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="card-head">
+      <h2>Sự cố đang mở <span class="count" id="inc-count">0</span></h2>
+      <span class="muted small">Phát hiện → Điều tra → Khắc phục → Hệ thống tự kiểm chứng rồi mới đóng</span>
+    </div>
+    <div id="incidents" class="incidents"></div>
+  </section>
+
+  <section class="card">
+    <div class="tabs" role="tablist">
+      <button role="tab" data-tab="history" class="on">Lịch sử sự cố</button>
+      <button role="tab" data-tab="commands">Lệnh điều khiển</button>
+      <button role="tab" data-tab="settings">Cài đặt ngưỡng</button>
+      <button role="tab" data-tab="sim">Mô phỏng lỗi</button>
+    </div>
+    <div class="tab" id="tab-history"></div>
+    <div class="tab" id="tab-commands" hidden></div>
+    <div class="tab" id="tab-settings" hidden></div>
+    <div class="tab" id="tab-sim" hidden></div>
+  </section>
+</main>
+
+<footer class="muted small">
+  AgriGuard · ESP32 → MQTT → FastAPI → MongoDB Atlas · quan sát bằng Datadog ·
+  <a href="docs" target="_blank" rel="noopener">API docs</a>
+</footer>
+
+<div id="tooltip" class="tooltip" hidden></div>
+<div id="toast" class="toast" hidden></div>
+<script src="chart.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

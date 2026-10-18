@@ -1,0 +1,13 @@
+# Kiểm tra broker MQTT còn nhận kết nối -> service check tcp.can_connect, metric network.tcp.response_time
+init_config:
+
+instances:
+  - name: agriguard-mosquitto
+    host: mosquitto
+    port: 1883
+    timeout: 3
+    min_collection_interval: 15
+    collect_response_time: true
+    tags:
+      - app:agriguard
+      - service:agriguard-mqtt

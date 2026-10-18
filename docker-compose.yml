@@ -1,0 +1,98 @@
+# AgriGuard – chạy toàn bộ hệ thống:
+#   docker compose up -d --build                         # Mosquitto + backend/web + simulator
+#   docker compose --profile datadog up -d --build       # + Datadog Agent (cần DD_API_KEY trong .env)
+#   docker compose --profile local-mongo up -d --build   # + MongoDB local (đặt MONGODB_URI=mongodb://mongo:27017)
+name: agriguard
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    restart: unless-stopped
+    ports:
+      - "1883:1883"
+    environment:
+      MQTT_USER: ${MQTT_USER:-}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:-}
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mosquitto-data:/mosquitto/data
+    # Sinh file mật khẩu từ biến môi trường để không phải commit secret vào repo
+    command: >
+      sh -c 'cp /mosquitto/config/mosquitto.conf /tmp/m.conf &&
+      if [ -n "$$MQTT_PASSWORD" ]; then
+        mosquitto_passwd -b -c /tmp/passwd "$$MQTT_USER" "$$MQTT_PASSWORD" &&
+        chown mosquitto:mosquitto /tmp/passwd && chmod 0700 /tmp/passwd &&
+        printf "allow_anonymous false\npassword_file /tmp/passwd\n" >> /tmp/m.conf;
+      else echo "allow_anonymous true" >> /tmp/m.conf; fi &&
+      exec mosquitto -c /tmp/m.conf'
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"mosquitto","service":"agriguard-mqtt"}]'
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      MQTT_HOST: mosquitto
+      DD_AGENT_HOST: datadog-agent
+      DD_SERVICE: agriguard-backend
+      DD_VERSION: "1.0.0"
+      DD_LOGS_INJECTION: "true"
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    depends_on:
+      - mosquitto
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"python","service":"agriguard-backend"}]'
+      com.datadoghq.tags.service: agriguard-backend
+      com.datadoghq.tags.version: "1.0.0"
+
+  simulator:
+    build: ./simulator
+    restart: unless-stopped
+    environment:
+      MQTT_HOST: mosquitto
+      MQTT_USER: ${MQTT_USER:-}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:-}
+      AGRI_SITE: ${AGRI_SITE:-farm-a}
+      SIM_DEVICES: ${SIM_DEVICES:-2}
+      SIM_DAY_MINUTES: ${SIM_DAY_MINUTES:-30}
+    depends_on:
+      - mosquitto
+    labels:
+      com.datadoghq.ad.logs: '[{"source":"python","service":"agriguard-simulator"}]'
+
+  datadog-agent:
+    image: gcr.io/datadoghq/agent:7
+    profiles: ["datadog"]
+    restart: unless-stopped
+    environment:
+      DD_API_KEY: ${DD_API_KEY:-}
+      DD_SITE: ${DD_SITE:-datadoghq.com}
+      DD_ENV: ${DD_ENV:-demo}
+      DD_HOSTNAME: ${DD_HOSTNAME:-agriguard-host}
+      DD_TAGS: "app:agriguard"
+      DD_DOGSTATSD_NON_LOCAL_TRAFFIC: "true"
+      DD_APM_ENABLED: "true"
+      DD_APM_NON_LOCAL_TRAFFIC: "true"
+      DD_LOGS_ENABLED: "true"
+      DD_LOGS_CONFIG_CONTAINER_COLLECT_ALL: "true"
+      DD_CONTAINER_EXCLUDE_LOGS: "name:datadog-agent"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./datadog/conf.d:/conf.d:ro
+    ports:
+      - "8125:8125/udp"
+
+  mongo:
+    image: mongo:7
+    profiles: ["local-mongo"]
+    restart: unless-stopped
+    volumes:
+      - mongo-data:/data/db
+
+volumes:
+  mosquitto-data:
+  mongo-data:

@@ -1,0 +1,9 @@
+{
+  "transition": "$ALERT_TRANSITION",
+  "title": "$EVENT_TITLE",
+  "monitor_id": "$ALERT_ID",
+  "scope": "$ALERT_SCOPE",
+  "tags": "$TAGS",
+  "link": "$LINK",
+  "priority": "$PRIORITY"
+}

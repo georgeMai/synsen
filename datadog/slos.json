@@ -1,0 +1,40 @@
+[
+  {
+    "name": "[AgriGuard] Dữ liệu cảm biến được ghi trong 5 giây",
+    "type": "metric",
+    "description": "Tỉ lệ bản tin telemetry được ghi vào MongoDB trong vòng 5 giây kể từ lúc đo.",
+    "query": {
+      "numerator": "sum:agriguard.ingest.within_slo{*}.as_count()",
+      "denominator": "sum:agriguard.ingest.messages{*}.as_count()"
+    },
+    "thresholds": [
+      {
+        "timeframe": "7d",
+        "target": 99.0,
+        "warning": 99.5
+      }
+    ],
+    "tags": [
+      "app:agriguard"
+    ]
+  },
+  {
+    "name": "[AgriGuard] Lệnh điều khiển được xác nhận trong 10 giây",
+    "type": "metric",
+    "description": "Tỉ lệ lệnh bật/tắt bơm, phun sương được ESP32 xác nhận (ack) trong 10 giây.",
+    "query": {
+      "numerator": "sum:agriguard.command.acked_in_time{*}.as_count()",
+      "denominator": "sum:agriguard.command.sent{*}.as_count()"
+    },
+    "thresholds": [
+      {
+        "timeframe": "7d",
+        "target": 95.0,
+        "warning": 98.0
+      }
+    ],
+    "tags": [
+      "app:agriguard"
+    ]
+  }
+]
