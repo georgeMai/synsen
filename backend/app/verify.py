@@ -11,6 +11,7 @@ from .commands import commands
 from .config import settings
 from .db import db, utcnow
 from .incidents import incidents
+from .irrigation import REASONS, describe
 from .ingest import latency_p95
 from .rules import PUMP_FLOW_GRACE_S
 from .state import runtime
@@ -191,6 +192,43 @@ async def _verify_stable_power(inc: dict, cfg: dict) -> Result:
     return False, "Thiết bị vẫn khởi động lại hoặc mất kết nối"
 
 
+async def _verify_irrigation_response(inc: dict, cfg: dict) -> Result:
+    """Tưới thử một lượng nhỏ, chờ nước thấm rồi so phản hồi của đất với mức bình thường đã học."""
+    dev = inc["device_id"]
+    rt = runtime.get(dev)
+    if not _fresh(dev):
+        return False, "Thiết bị đang offline, không thể tưới thử"
+    c = cfg["irrigation"]
+    if rt.latest and rt.latest.pump_lockout:
+        await commands.send(dev, "pump", "clear_lockout", reason="verification", actor="system")
+        await asyncio.sleep(2)
+    soil = rt.latest.soil_moisture_pct if rt.latest else None
+    if soil is not None and soil > c["max_start_soil_pct"]:
+        return False, (f"Đất đang quá ẩm ({soil:.0f}% > {c['max_start_soil_pct']}%) nên chưa tưới thử được – "
+                       "chờ đất khô bớt rồi bấm lại “Đã xử lý”")
+    test_s = int(c["test_seconds"])
+    await incidents.add_note(inc["_id"], "system", "verification_started",
+                             f"Tưới thử {test_s} giây, chờ {int(c['settle_seconds'])} giây cho nước thấm "
+                             "rồi so sánh %/L với mức bình thường")
+    since = utcnow()
+    await commands.send(dev, "pump", "on", duration_s=test_s, reason="verification", actor="system")
+
+    def assessed() -> bool:
+        ev = rt.last_irrigation
+        return bool(ev and ev.get("started_at") and (ev["started_at"] - since).total_seconds() >= -10)
+
+    ok = await _wait_for(assessed, test_s + c["settle_seconds"] + 60, interval=2)
+    if not ok:
+        return False, "Không ghi nhận được lần tưới thử (lệnh không thực hiện hoặc thiếu dữ liệu)"
+    ev = rt.last_irrigation
+    if ev["status"] == "normal":
+        return True, (f"Tưới thử {ev['liters']:.2f} L: đất ẩm lên {ev['rise_pct']:+.1f}% = "
+                      f"{ev['ratio_pct_per_l']:.1f} %/L (bình thường {ev['baseline_pct_per_l']:.1f} %/L, z = {ev['zscore']:.1f})")
+    if ev["status"] == "excluded":
+        return False, f"Lần tưới thử không đánh giá được ({REASONS.get(ev['reason'], ev['reason'])}) – thử lại sau"
+    return False, "Tưới thử vẫn bất thường: " + describe(ev)
+
+
 VERIFIERS: dict[str, Callable[[dict, dict], Awaitable[Result]]] = {
     "device_offline": _verify_online,
     "pump_dry_run": _verify_pump_flow,
@@ -204,6 +242,8 @@ VERIFIERS: dict[str, Callable[[dict, dict], Awaitable[Result]]] = {
     "command_timeout": _verify_command_roundtrip,
     "ingest_latency": _verify_latency,
     "power_brownout": _verify_stable_power,
+    "irrigation_ineffective": _verify_irrigation_response,
+    "soil_response_high": _verify_irrigation_response,
 }
 
 _running: set[str] = set()

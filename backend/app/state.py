@@ -28,6 +28,7 @@ class Reading:
     mist_lockout: bool = False
     flow_lpm: float = 0.0
     rssi_dbm: Optional[int] = None
+    flow_total: Optional[float] = None     # bộ đếm lít tích luỹ của thiết bị (flow_liters_total)
 
 
 @dataclass
@@ -45,6 +46,12 @@ class DeviceRuntime:
     mist_off_since: Optional[datetime] = None
     mist_start_humidity: Optional[float] = None
     last_uptime_s: Optional[int] = None
+    irrigation: Optional[object] = None        # IrrigationRun đang diễn ra / chờ thấm (irrigation.py)
+    last_irrigation: Optional[dict] = None     # kết quả lần tưới gần nhất (mọi trạng thái)
+    last_assessed: Optional[dict] = None       # lần tưới gần nhất đã được chấm điểm (normal/low/high)
+    irrigation_settled_at: Optional[datetime] = None  # lúc lần tưới trước thấm xong (đo tốc độ khô sau mốc này)
+    drying_rate_est: Optional[float] = None    # tốc độ khô gần nhất đo được (%/giây) – dự phòng khi tưới dồn dập
+    drying_rate_at: Optional[datetime] = None
 
     def add(self, r: Reading) -> None:
         prev = self.readings[-1] if self.readings else None

@@ -11,6 +11,7 @@ from .commands import commands
 from .config import settings
 from .db import db, utcnow
 from .incidents import incidents
+from .irrigation import BASELINE_STATUSES, ASSESSED, IrrigationTracker, assess, describe
 from .metrics import device_tags, metrics
 from .state import Reading, runtime
 
@@ -76,6 +77,7 @@ async def _telemetry(site: str, device_id: str, data: dict, received: datetime) 
         pump_on=bool(data.get("pump_on")), pump_lockout=bool(data.get("pump_lockout")),
         mist_on=bool(data.get("mist_on")), mist_lockout=bool(data.get("mist_lockout")),
         flow_lpm=flow, rssi_dbm=int(_num(data.get("rssi_dbm")) or 0) or None,
+        flow_total=_num(data.get("flow_liters_total"), 0),
     )
 
     doc = {
@@ -96,6 +98,14 @@ async def _telemetry(site: str, device_id: str, data: dict, received: datetime) 
     prev = rt.latest
     rt.site, rt.zone, rt.source = site, zone, source
     rt.add(reading)
+    try:
+        cfg = await db.get_settings_cached()
+        done = IrrigationTracker.on_reading(rt, reading, prev, reading.flow_total,
+                                            prev.flow_total if prev else None, cfg)
+        if done:
+            await _finish_irrigation(rt, *done, cfg)
+    except Exception:  # phân tích tưới không được làm hỏng luồng ingest chính
+        log.exception("Irrigation analysis failed", extra={"device_id": device_id})
 
     latest = {k: doc[k] for k in ("air_temp_c", "air_humidity_pct", "soil_moisture_pct", "soil_raw", "dht_ok",
                                   "soil_ok", "pump_on", "pump_lockout", "mist_on", "mist_lockout", "flow_lpm",
@@ -145,6 +155,34 @@ async def _telemetry(site: str, device_id: str, data: dict, received: datetime) 
         liters = flow * dt / 60
         if liters > 0:
             metrics.increment("flow.volume_ml", round(liters * 1000), tags)
+
+
+async def _finish_irrigation(rt, run, soil_after, cfg: dict) -> dict:
+    """Chấm điểm một lần tưới đã thấm xong, lưu MongoDB, phát metric Datadog."""
+    c = cfg["irrigation"]
+    history = [d["ratio_pct_per_l"] async for d in db.irrigation_events.find(
+        {"device_id": rt.device_id, "status": {"$in": list(BASELINE_STATUSES)}, "ratio_pct_per_l": {"$ne": None}},
+        {"ratio_pct_per_l": 1}).sort("ended_at", -1).limit(int(c["baseline_events"]))]
+    ev = assess(run, soil_after, history, cfg)
+    ev["irrigation_id"] = f"IRR-{run.started_at:%y%m%d-%H%M%S}-{rt.device_id}"
+    doc = {"_id": ev["irrigation_id"], "device_id": rt.device_id, "site": rt.site, "zone": rt.zone,
+           "source": rt.source, **ev, "created_at": utcnow()}
+    await db.irrigation_events.replace_one({"_id": doc["_id"]}, doc, upsert=True)
+    rt.last_irrigation = ev
+    if ev["status"] in ASSESSED:
+        rt.last_assessed = ev
+
+    tags = device_tags(rt.device_id, rt.site, rt.zone, rt.source)
+    metrics.increment("irrigation.events", tags={**tags, "status": ev["status"], "reason": ev["reason"] or "none"})
+    metrics.gauge("irrigation.liters", ev["liters"], tags)
+    metrics.gauge("irrigation.response_pct_per_liter", ev["ratio_pct_per_l"], {**tags, "status": ev["status"]})
+    metrics.gauge("irrigation.response_zscore", ev["zscore"], tags)
+    metrics.gauge("irrigation.baseline_pct_per_liter", ev["baseline_pct_per_l"], tags)
+    level = logging.WARNING if ev["status"] in ("low_response", "high_response") else logging.INFO
+    log.log(level, "Irrigation assessed: %s", describe(ev) if level == logging.WARNING else ev["status"],
+            extra={"device_id": rt.device_id, "irrigation_id": ev["irrigation_id"], "irrigation_status": ev["status"],
+                   "liters": ev["liters"], "ratio_pct_per_l": ev["ratio_pct_per_l"], "zscore": ev["zscore"]})
+    return ev
 
 
 async def _status(site: str, device_id: str, data: dict, received: datetime) -> None:

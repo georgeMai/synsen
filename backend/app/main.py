@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import mimetypes
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -18,6 +19,11 @@ from .ingest import handle_message
 from .logging_setup import setup_logging
 from .mqtt_bridge import bridge
 from .verify import resume_pending
+
+# Windows đôi khi ghi sai MIME (.css -> text/plain) trong registry khiến trình duyệt bỏ qua CSS/JS
+mimetypes.add_type("text/css", ".css")
+mimetypes.add_type("text/javascript", ".js")
+mimetypes.add_type("image/svg+xml", ".svg")
 
 setup_logging(os.getenv("LOG_LEVEL", "INFO"))
 log = logging.getLogger("agriguard")
@@ -46,6 +52,15 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="AgriGuard API", version="1.0.0", lifespan=lifespan, root_path=settings.root_path,
               description="Giám sát IoT nông nghiệp thời gian thực – MongoDB + Datadog")
 app.include_router(router)
+
+
+@app.middleware("http")
+async def no_stale_assets(request, call_next):
+    """Buộc trình duyệt kiểm tra lại file web mỗi lần tải (tránh dùng CSS/JS cũ trong cache)."""
+    response = await call_next(request)
+    if not request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
 
 web_dir = Path(settings.web_dir) if settings.web_dir else Path(__file__).resolve().parents[2] / "web"
 if web_dir.is_dir():

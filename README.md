@@ -6,6 +6,13 @@ rò nước, cảm biến lỗi, mất kết nối hay thiết bị không phả
 **Detect → Investigate → Resolve**. Khi người vận hành báo đã xử lý, hệ thống **tự kiểm chứng bằng dữ liệu thật**
 rồi mới đóng sự cố.
 
+Ngoài các luật ngưỡng, AgriGuard **học mức phản hồi của đất trên mỗi lít nước** cho từng luống (lịch sử trong MongoDB)
+và phát hiện bất thường thống kê (robust z-score, cảnh báo qua Datadog). Nhờ đó bắt được lỗi mà không ngưỡng nào thấy:
+bơm chạy, lưu lượng bình thường, nhưng **nước không tới gốc** (tuột/rò ống, cảm biến lệch vùng rễ).
+Hệ thống còn **dự báo** bao lâu nữa đất khô tới ngưỡng tưới và cần bao nhiêu lít nước mỗi ngày; trên Datadog có
+monitor **forecast** (cây sắp thiếu nước, ESP32 sắp cạn bộ nhớ), **anomaly detection** (lượng nước, độ trễ lệnh,
+lượng bản tin) và có thể bật **Bits AI** để tự điều tra khi monitor báo động – xem [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 ```
 ESP32 (DHT11, cảm biến đất, YF-S201, relay bơm, relay phun sương)      Simulator (dữ liệu GIẢ LẬP)
             │ MQTT: telemetry / status+LWT / ack / event                     │ cùng hợp đồng MQTT
@@ -15,7 +22,7 @@ ESP32 (DHT11, cảm biến đất, YF-S201, relay bơm, relay phun sương)     
                         FastAPI backend (ingest · luật phát hiện · điều khiển tự động · kiểm chứng)
                          │                    │ DogStatsD metrics + JSON logs + APM traces
                          ▼                    ▼
-                   MongoDB Atlas         Datadog Agent ──► Datadog: dashboard · 14 monitors · 2 SLO
+                   MongoDB Atlas         Datadog Agent ──► Datadog: dashboard · 20 monitors · 2 SLO
                    (time series)                              │ webhook khi monitor bắn/hồi phục
                          ▲                                    ▼
                     Web dashboard  ◄──────────────  /api/webhooks/datadog → incident trong MongoDB
@@ -25,7 +32,7 @@ ESP32 (DHT11, cảm biến đất, YF-S201, relay bơm, relay phun sương)     
 
 Chi tiết kiến trúc, MongoDB data model, danh sách metrics Datadog và kịch bản D‑I‑R nằm trong
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) và [docs/DIR_SCENARIOS.md](docs/DIR_SCENARIOS.md).
-Phần cứng xem [firmware/WIRING.md](firmware/WIRING.md).
+Phần cứng và sơ đồ đấu dây xem [firmware/WIRING.md](firmware/WIRING.md) ([ảnh sơ đồ](firmware/wiring-diagram.png)).
 
 ## Cấu trúc repo
 
@@ -60,9 +67,16 @@ Tài liệu API (OpenAPI) ở <http://localhost:8000/docs>.
 3. Backend tự tạo time series collection `telemetry` (TTL 30 ngày), các index và cài đặt mặc định.
 
 ### Kết nối ESP32 thật
-1. Trong `firmware/agriguard_esp32/`, chép `secrets.h.example` thành `secrets.h`. Điền Wi‑Fi và đặt `MQTT_HOST` = IP LAN của laptop chạy Docker.
-2. Nạp firmware (xem hướng dẫn ở đầu file `.ino`). Thiết bị `esp32-01` sẽ xuất hiện trên dashboard với nhãn “thật”.
-3. Khi mở cổng 1883 ra Internet, đặt `MQTT_PASSWORD` trong `.env` (broker sẽ bắt buộc đăng nhập) và cập nhật `secrets.h` cho khớp.
+1. Arduino IDE → Library Manager, cài: PubSubClient, ArduinoJson (v7), DHT sensor library, Adafruit GFX, Adafruit ILI9341, **WiFiManager (tzapu) ≥ 2.0.17**. Board: *ESP32 Dev Module* (core 3.x).
+2. Trong `firmware/agriguard_esp32/`, chép `secrets.h.example` thành `secrets.h`. Chỉ cần điền **giá trị MQTT mặc định** (host, user, password). Không phải gắn cứng Wi‑Fi.
+3. Nạp firmware. Lần đầu khởi động, ESP32 phát Wi‑Fi **`AgriGuard-esp32-01`** (mật khẩu `PORTAL_PASSWORD`, mặc định `agriguard123`). Màn hình TFT hiện hướng dẫn.
+4. Dùng điện thoại kết nối vào Wi‑Fi đó. Trang cấu hình tự mở (hoặc vào <http://192.168.4.1>). Chọn mạng Wi‑Fi, nhập mật khẩu, kiểm tra MQTT host/user/password, rồi bấm **Save**.
+5. Thiết bị `esp32-01` sẽ xuất hiện trên dashboard với nhãn “thật”. Cấu hình được lưu trong flash, mất điện không mất.
+
+**Đổi chỗ / đổi mạng Wi‑Fi:** không cần nạp lại firmware.
+- Mất Wi‑Fi quá 60 giây, ESP32 tự mở lại trang cấu hình `AgriGuard-esp32-01`. Trong lúc đó vẫn thử lại mạng cũ; mạng cũ có lại thì tự đóng trang.
+- Giữ nút **BOOT** 3 giây để mở trang cấu hình bất cứ lúc nào. Giữ 10 giây để xoá toàn bộ cấu hình Wi‑Fi + MQTT.
+- Logic an toàn (chống bơm chạy khô, hẹn giờ tắt, tắt khi mất server) vẫn chạy trong lúc cấu hình.
 
 ## 2. Bật Datadog
 
@@ -90,7 +104,7 @@ python -m pytest -q
 
 **End‑to‑end D‑I‑R** (chạy trên hệ thống đang chạy, dùng thiết bị giả lập):
 ```bash
-python scripts/dir_drill.py dry_run      # hoặc: offline | mist_empty | dht_fail | no_ack | all
+python scripts/dir_drill.py dry_run      # hoặc: offline | mist_empty | dht_fail | no_ack | hose_off | all
 ```
 Với mỗi kịch bản, script tiêm lỗi rồi chờ hệ thống phát hiện. Tiếp theo nó báo “đã xử lý” khi lỗi **chưa** được sửa
 để kiểm tra rằng hệ thống từ chối đóng. Sau đó script sửa lỗi và kiểm tra incident được đóng kèm bằng chứng.
@@ -104,19 +118,14 @@ MONGODB_URI=memory:// MQTT_HOST=localhost uvicorn app.main:app --port 8000
 cd ../simulator && pip install paho-mqtt && MQTT_HOST=localhost python simulator.py
 ```
 
-## 4. Triển khai lên synsen.net/agriguard
+## 4. Triển khai lên VPS + synsen.net/agriguard
 
-Chạy `docker compose up -d --build` trên server rồi đặt reverse proxy, ví dụ với Nginx:
-```nginx
-location /agriguard/ {
-    proxy_pass http://127.0.0.1:8000/;          # dấu "/" cuối để bỏ tiền tố /agriguard
-    proxy_set_header Host $host;
-    proxy_set_header X-Forwarded-Proto $scheme;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-}
+Toàn bộ stack (Caddy HTTPS, backend + web, Mosquitto, simulator, Datadog Agent) chạy trên một VPS Ubuntu. Tên miền `synsen.net` trỏ thẳng về VPS, web nằm ở `https://synsen.net/agriguard/`.
+```bash
+git clone <repo> agriguard && cd agriguard
+sudo bash deploy/setup-vps.sh      # cài Docker, hỏi cấu hình, chạy stack, tạo cấu hình Datadog
 ```
-Trong `.env`, đặt `ROOT_PATH=/agriguard`, `PUBLIC_BASE_URL=https://synsen.net/agriguard` và đặt `ADMIN_TOKEN`.
-Web dùng đường dẫn tương đối nên chạy được dưới đường dẫn con. Mở cổng TCP 1883 nếu ESP32 kết nối từ xa.
+Hướng dẫn đầy đủ, gồm DNS, cấu hình ESP32 và cách xử lý sự cố: [deploy/DEPLOY.md](deploy/DEPLOY.md).
 
 ## 5. Biến môi trường chính
 

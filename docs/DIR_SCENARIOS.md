@@ -63,6 +63,25 @@ và sự cố quay về trạng thái “Đã tiếp nhận”.
 - **Resolve:** châm nước, rồi bấm “Đã xử lý”. Hệ thống chạy thử phun 120 giây và yêu cầu độ ẩm tăng ≥ 3%.
   Interlock ngăn bật lại máy phun khi sự cố chưa đóng, giúp tránh đĩa siêu âm chạy khô.
 
+## Kịch bản 4 – Nước tưới không tới gốc (phát hiện bất thường thống kê)
+
+| Gây lỗi | Thật: **nhấc đầu ống tưới ra khỏi chậu** (nước vẫn chảy qua YF‑S201 nhưng rơi ra ngoài). Giả lập: “Ống tưới tuột khỏi gốc” |
+|---|---|
+
+- **Chuẩn bị:** hệ thống cần ≥ 5 lần tưới bình thường để học mức phản hồi của chậu/luống (ví dụ ~12 %/L).
+  Script diễn tập tự tưới ngắn cho đủ; mức đã học được lưu trong MongoDB nên chỉ làm một lần.
+- **Detect:** lần tưới kế tiếp: YF‑S201 đếm 0.35 L nhưng đất chỉ +0.7% → 1.9 %/L, z = −4.7 → incident
+  `irrigation_ineffective`, monitor “Đất không phản hồi khi tưới” bắn. Mọi ngưỡng tĩnh đều “xanh”: bơm chạy, có lưu lượng, cảm biến hợp lệ.
+- **Investigate:** nhóm “Phản hồi đất trên mỗi lít nước” trên Datadog: cột %/L tụt xa đường baseline, z-score vượt vạch −3,
+  trong khi `flow.rate` vẫn bình thường. Document lần tưới trong `irrigation_events` có đủ số liệu để giải thích.
+- **Resolve:** bấm “Đã xử lý” khi chưa cắm ống → hệ thống tưới thử, z vẫn −6.5 → **từ chối đóng**. Cắm lại ống → tưới thử
+  8.4 %/L (z = −1.6) → đóng kèm bằng chứng.
+
+```bash
+python scripts/dir_drill.py hose_off       # thiết bị giả lập: tự học baseline, gây lỗi, kiểm chứng (PASS/FAIL)
+```
+Thiết bị thật: chậu nhỏ (nước thấm 1–3 phút), `settle_seconds` = 120. Cảm biến đất cần đọc ổn định và đã hiệu chuẩn.
+
 ## Kịch bản phụ (cho phần hỏi đáp)
 - **DHT11 hỏng:** rút dây DATA. Sau 3 lần đọc lỗi liên tiếp, `dht_fault` mở và phun sương tự động bị khoá.
   Kiểm chứng: 3 lần đọc hợp lệ liên tiếp.

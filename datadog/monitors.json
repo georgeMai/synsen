@@ -244,6 +244,150 @@
     }
   },
   {
+    "name": "[AgriGuard] Đất không phản hồi khi tưới (bất thường %/L)",
+    "type": "query alert",
+    "query": "min(last_5m):min:agriguard.irrigation.response_zscore{*} by {device_id} <= -3",
+    "message": "{{#is_alert}}🚨 **Nước tưới không tới gốc** trên `{{device_id.name}}`\n\n**Điều tra:** So sánh `agriguard.irrigation.response_pct_per_liter` với `agriguard.irrigation.baseline_pct_per_liter`: YF-S201 vẫn đếm được nước (`agriguard.irrigation.liters`) nhưng độ ẩm đất không tăng tương ứng. Chi tiết từng lần tưới: collection `irrigation_events` trong MongoDB.\n\n**Khắc phục:** Kiểm tra ống tưới có tuột / rò không, cảm biến đất có bị lệch khỏi vùng rễ không; sau đó bấm “Đã xử lý” – hệ thống sẽ tưới thử và so sánh lại với mức bình thường.{{/is_alert}}\n{{#is_recovery}}✅ Nước tưới không tới gốc – tín hiệu đã trở lại bình thường. Xác nhận khắc phục trên web AgriGuard để hệ thống kiểm chứng và đóng sự cố.{{/is_recovery}}\n\nDashboard: AgriGuard – IoT Irrigation Operations @webhook-agriguard",
+    "priority": 2,
+    "tags": [
+      "app:agriguard",
+      "incident_type:irrigation_ineffective",
+      "team:agriguard"
+    ],
+    "options": {
+      "notify_audit": false,
+      "include_tags": true,
+      "require_full_window": false,
+      "notify_no_data": false,
+      "renotify_interval": 0,
+      "thresholds": {
+        "critical": -3,
+        "warning": -2
+      }
+    }
+  },
+  {
+    "name": "[AgriGuard] Đất ẩm lên bất thường so với lượng nước",
+    "type": "query alert",
+    "query": "max(last_5m):max:agriguard.irrigation.response_zscore{*} by {device_id} >= 3",
+    "message": "{{#is_alert}}🚨 **Đất phản hồi quá mạnh so với lượng nước** trên `{{device_id.name}}`\n\n**Điều tra:** `agriguard.irrigation.response_pct_per_liter` cao bất thường so với baseline.\n\n**Khắc phục:** Kiểm tra cảm biến đất có bị đọng nước / cắm sát đầu tưới không.{{/is_alert}}\n{{#is_recovery}}✅ Đất phản hồi quá mạnh so với lượng nước – tín hiệu đã trở lại bình thường. Xác nhận khắc phục trên web AgriGuard để hệ thống kiểm chứng và đóng sự cố.{{/is_recovery}}\n\nDashboard: AgriGuard – IoT Irrigation Operations @webhook-agriguard",
+    "priority": 3,
+    "tags": [
+      "app:agriguard",
+      "incident_type:soil_response_high",
+      "team:agriguard"
+    ],
+    "options": {
+      "notify_audit": false,
+      "include_tags": true,
+      "require_full_window": false,
+      "notify_no_data": false,
+      "renotify_interval": 0,
+      "thresholds": {
+        "critical": 3,
+        "warning": 2
+      }
+    }
+  },
+  {
+    "name": "[AgriGuard] Dự báo cây sắp thiếu nước trong 2 giờ (forecast)",
+    "type": "query alert",
+    "query": "min(next_2h):forecast(avg:agriguard.soil.moisture{*} by {device_id}, 'linear', 1, interval=300, history='6h', model='reactive') <= 25",
+    "message": "{{#is_alert}}🚨 **Dự báo đất sẽ khô dưới 25% trong 2 giờ tới** trên `{{device_id.name}}`\n\n**Điều tra:** Xem `agriguard.soil.minutes_to_dry`, chế độ bơm (AUTO/MANUAL/OFF) và các sự cố đang khoá bơm.\n\n**Khắc phục:** Gỡ nguyên nhân khoá tưới hoặc tưới tay trước khi cây bị héo.{{/is_alert}}\n{{#is_recovery}}✅ Dự báo đất sẽ khô dưới 25% trong 2 giờ tới – tín hiệu đã trở lại bình thường. Xác nhận khắc phục trên web AgriGuard để hệ thống kiểm chứng và đóng sự cố.{{/is_recovery}}\n\nDashboard: AgriGuard – IoT Irrigation Operations ",
+    "priority": 2,
+    "tags": [
+      "app:agriguard",
+      "incident_type:soil_drying_forecast",
+      "team:agriguard"
+    ],
+    "options": {
+      "notify_audit": false,
+      "include_tags": true,
+      "require_full_window": false,
+      "notify_no_data": false,
+      "renotify_interval": 0,
+      "thresholds": {
+        "critical": 25,
+        "warning": 30
+      }
+    }
+  },
+  {
+    "name": "[AgriGuard] Dự báo ESP32 cạn bộ nhớ trong 1 ngày (forecast)",
+    "type": "query alert",
+    "query": "min(next_1d):forecast(min:agriguard.device.free_heap{*} by {device_id}, 'linear', 1, interval=3600, history='1d', model='default') <= 20000",
+    "message": "{{#is_alert}}🚨 **Dự báo bộ nhớ trống của ESP32 giảm dưới 20 KB** trên `{{device_id.name}}`\n\n**Điều tra:** `agriguard.device.free_heap` giảm dần → rò bộ nhớ trong firmware (chuỗi String, JSON).\n\n**Khắc phục:** Khởi động lại thiết bị theo lịch, kiểm tra bản firmware mới nhất.{{/is_alert}}\n{{#is_recovery}}✅ Dự báo bộ nhớ trống của ESP32 giảm dưới 20 KB – tín hiệu đã trở lại bình thường. Xác nhận khắc phục trên web AgriGuard để hệ thống kiểm chứng và đóng sự cố.{{/is_recovery}}\n\nDashboard: AgriGuard – IoT Irrigation Operations ",
+    "priority": 3,
+    "tags": [
+      "app:agriguard",
+      "incident_type:heap_forecast",
+      "team:agriguard"
+    ],
+    "options": {
+      "notify_audit": false,
+      "include_tags": true,
+      "require_full_window": false,
+      "notify_no_data": false,
+      "renotify_interval": 0,
+      "thresholds": {
+        "critical": 20000,
+        "warning": 40000
+      }
+    }
+  },
+  {
+    "name": "[AgriGuard] Lượng nước tưới bất thường (anomaly)",
+    "type": "query alert",
+    "query": "avg(last_1h):anomalies(sum:agriguard.flow.volume_ml{*} by {device_id}.as_count(), 'basic', 3) >= 1",
+    "message": "{{#is_alert}}🚨 **Lượng nước tưới khác hẳn thường lệ** trên `{{device_id.name}}`\n\n**Điều tra:** So với `agriguard.water.predicted_liters_per_day` và `agriguard.control.decision` theo reason: trời nóng bất thường, rò nước, hay cảm biến đất sai làm bơm chạy nhiều.\n\n**Khắc phục:** Kiểm tra đường ống và cảm biến đất.{{/is_alert}}\n{{#is_recovery}}✅ Lượng nước tưới khác hẳn thường lệ – tín hiệu đã trở lại bình thường. Xác nhận khắc phục trên web AgriGuard để hệ thống kiểm chứng và đóng sự cố.{{/is_recovery}}\n\nDashboard: AgriGuard – IoT Irrigation Operations ",
+    "priority": 3,
+    "tags": [
+      "app:agriguard",
+      "incident_type:water_usage_anomaly",
+      "team:agriguard"
+    ],
+    "options": {
+      "notify_audit": false,
+      "include_tags": true,
+      "require_full_window": false,
+      "notify_no_data": false,
+      "renotify_interval": 0,
+      "thresholds": {
+        "critical": 1
+      },
+      "threshold_windows": {
+        "trigger_window": "last_15m",
+        "recovery_window": "last_15m"
+      }
+    }
+  },
+  {
+    "name": "[AgriGuard] Độ trễ xác nhận lệnh bất thường (anomaly)",
+    "type": "query alert",
+    "query": "avg(last_1h):anomalies(avg:agriguard.command.ack_latency_ms.avg{*}, 'basic', 3) >= 1",
+    "message": "{{#is_alert}}🚨 **Độ trễ ack lệnh điều khiển tăng bất thường** trên `{{device_id.name}}`\n\n**Điều tra:** Xem `agriguard.device.rssi`, `mqtt.disconnects` và APM trace của backend.\n\n**Khắc phục:** Kiểm tra sóng Wi‑Fi tại vị trí đặt ESP32.{{/is_alert}}\n{{#is_recovery}}✅ Độ trễ ack lệnh điều khiển tăng bất thường – tín hiệu đã trở lại bình thường. Xác nhận khắc phục trên web AgriGuard để hệ thống kiểm chứng và đóng sự cố.{{/is_recovery}}\n\nDashboard: AgriGuard – IoT Irrigation Operations ",
+    "priority": 3,
+    "tags": [
+      "app:agriguard",
+      "incident_type:ack_latency_anomaly",
+      "team:agriguard"
+    ],
+    "options": {
+      "notify_audit": false,
+      "include_tags": true,
+      "require_full_window": false,
+      "notify_no_data": false,
+      "renotify_interval": 0,
+      "thresholds": {
+        "critical": 1
+      },
+      "threshold_windows": {
+        "trigger_window": "last_15m",
+        "recovery_window": "last_15m"
+      }
+    }
+  },
+  {
     "name": "[AgriGuard] Lượng bản tin cảm biến bất thường",
     "type": "query alert",
     "query": "avg(last_15m):anomalies(sum:agriguard.ingest.messages{*}.as_count(), 'basic', 2) >= 1",
@@ -262,6 +406,10 @@
       "renotify_interval": 0,
       "thresholds": {
         "critical": 1
+      },
+      "threshold_windows": {
+        "trigger_window": "last_15m",
+        "recovery_window": "last_15m"
       }
     }
   },

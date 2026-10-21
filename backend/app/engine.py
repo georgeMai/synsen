@@ -9,6 +9,8 @@ from .config import settings
 from .control import decide_mist, decide_pump
 from .db import as_utc, db, utcnow
 from .incidents import incidents
+from .irrigation import ASSESSED
+from .prediction import dry_at, predict
 from .metrics import device_tags, metrics
 from .rules import INCIDENT_TYPES, evaluate, incident_type, sensor_health
 from .state import runtime
@@ -17,7 +19,8 @@ log = logging.getLogger(__name__)
 
 # Loại sự cố mà luật backend tự phát hiện (để đánh dấu "điều kiện lỗi đã hết")
 RULE_TYPES = {"device_offline", "pump_dry_run", "flow_without_pump", "pump_overrun", "mist_overrun",
-              "mist_ineffective", "dht_fault", "soil_sensor_fault", "soil_sensor_stuck"}
+              "mist_ineffective", "dht_fault", "soil_sensor_fault", "soil_sensor_stuck",
+              "irrigation_ineffective", "soil_response_high"}
 
 
 async def health_tick() -> None:
@@ -41,11 +44,22 @@ async def health_tick() -> None:
 
         for fault in RULE_TYPES:
             metrics.gauge("fault.active", int(fault in found), {**tags, "fault": fault})
+        ev = rt.last_assessed      # giữ chuỗi liên tục cho monitor Datadog (sự kiện tưới thì thưa)
+        if ev:
+            metrics.gauge("irrigation.response_zscore", ev.get("zscore"), tags)
+            metrics.gauge("irrigation.baseline_pct_per_liter", ev.get("baseline_pct_per_l"), tags)
         health = sensor_health(rt, findings)
         if not offline:
             for sensor, state in health.items():
                 metrics.gauge("sensor.health", int(state == "ok"), {**tags, "sensor": sensor})
-            await db.devices.update_one({"_id": rt.device_id}, {"$set": {"health": health}})
+            pred = predict(rt, cfg, now)
+            metrics.gauge("soil.drying_pct_per_hour", pred["drying_pct_per_hour"], tags)
+            metrics.gauge("soil.minutes_to_dry", pred["minutes_to_dry"], tags)
+            metrics.gauge("irrigation.predicted_liters_next", pred["liters_next_irrigation"], tags)
+            metrics.gauge("water.predicted_liters_per_day", pred["liters_per_day"], tags)
+            pred["dry_at"] = dry_at(now, pred["minutes_to_dry"])
+            pred["at"] = now
+            await db.devices.update_one({"_id": rt.device_id}, {"$set": {"health": health, "prediction": pred}})
 
         for f in findings:
             await incidents.open_or_update(rt.device_id, f.type, f.message, detected_by="rules",
@@ -143,3 +157,11 @@ async def bootstrap_runtime() -> None:
         rt.site, rt.zone, rt.source = d.get("site", ""), d.get("zone", ""), d.get("source", "real")
         rt.last_seen = as_utc(d.get("last_seen"))
         rt.online = bool(d.get("online"))  # dữ liệu cũ hơn offline_after_s sẽ bị luật coi là offline
+        last = await db.irrigation_events.find({"device_id": d["_id"]}).sort("ended_at", -1).limit(1).to_list(1)
+        assessed = await db.irrigation_events.find(
+            {"device_id": d["_id"], "status": {"$in": list(ASSESSED)}}).sort("ended_at", -1).limit(1).to_list(1)
+        rt.last_irrigation = last[0] if last else None
+        rt.last_assessed = assessed[0] if assessed else None
+        for ev in filter(None, (rt.last_irrigation, rt.last_assessed)):
+            for k in ("started_at", "ended_at"):
+                ev[k] = as_utc(ev.get(k))

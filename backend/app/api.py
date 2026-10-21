@@ -14,6 +14,7 @@ from .commands import commands
 from .config import settings
 from .db import DEFAULT_SETTINGS, db, deep_merge, utcnow
 from .incidents import ACTIVE, incidents
+from .irrigation import BASELINE_STATUSES, robust_baseline
 from .metrics import metrics
 from .mqtt_bridge import bridge
 from .rules import INCIDENT_TYPES
@@ -82,15 +83,29 @@ class HealthSettings(BaseModel):
     rssi_weak_dbm: int = Field(ge=-100, le=-40)
 
 
+class IrrigationSettings(BaseModel):
+    settle_seconds: Optional[float] = Field(None, ge=10, le=1800)
+    after_window_seconds: Optional[float] = Field(None, ge=5, le=300)
+    before_seconds: Optional[float] = Field(None, ge=10, le=600)
+    min_liters: Optional[float] = Field(None, ge=0.01, le=50)
+    max_start_soil_pct: Optional[float] = Field(None, ge=30, le=100)
+    exclude_if_mist: Optional[bool] = None
+    baseline_events: Optional[int] = Field(None, ge=3, le=200)
+    min_baseline_events: Optional[int] = Field(None, ge=2, le=100)
+    zscore_threshold: Optional[float] = Field(None, ge=1, le=10)
+    test_seconds: Optional[int] = Field(None, ge=5, le=300)
+
+
 class SettingsIn(BaseModel):
     pump: Optional[PumpSettings] = None
     mist: Optional[MistSettings] = None
     health: Optional[HealthSettings] = None
+    irrigation: Optional[IrrigationSettings] = None
 
 
 class FaultIn(BaseModel):
     fault: Literal["dry_run", "leak", "dht_fail", "soil_disconnect", "soil_stuck", "offline", "mist_empty",
-                   "no_ack", "brownout", "slow_network", "clear"]
+                   "no_ack", "brownout", "slow_network", "hose_off", "dry_soil", "clear"]
     on: bool = True
 
 
@@ -203,6 +218,22 @@ async def stats_today(device_id: str):
         "temp_max": r.get("temp_max"), "temp_min": r.get("temp_min"), "soil_min": r.get("soil_min"),
         "pump_starts": pump_cmds,
     }
+
+
+@router.get("/devices/{device_id}/irrigation")
+async def device_irrigation(device_id: str, limit: int = Query(30, le=200)):
+    """Các lần tưới gần nhất + mức phản hồi bình thường đã học (%/L)."""
+    cfg = await db.get_settings()
+    events = await db.irrigation_events.find({"device_id": device_id}).sort("ended_at", -1).limit(limit).to_list(limit)
+    ratios = [e["ratio_pct_per_l"] for e in events
+              if e.get("status") in BASELINE_STATUSES and e.get("ratio_pct_per_l") is not None]
+    ratios = ratios[: int(cfg["irrigation"]["baseline_events"])]
+    baseline = None
+    if len(ratios) >= int(cfg["irrigation"]["min_baseline_events"]):
+        med, scale = robust_baseline(ratios)
+        baseline = {"median_pct_per_l": round(med, 2), "scale": round(scale, 2), "n": len(ratios)}
+    return {"device_id": device_id, "baseline": baseline, "learning_needed": max(
+        0, int(cfg["irrigation"]["min_baseline_events"]) - len(ratios)), "events": events}
 
 
 @router.get("/devices/{device_id}/events")

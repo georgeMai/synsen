@@ -10,7 +10,8 @@ from .config import settings
 
 log = logging.getLogger(__name__)
 
-COLLECTIONS = ("telemetry", "devices", "settings", "commands", "incidents", "events", "audit_log")
+COLLECTIONS = ("telemetry", "devices", "settings", "commands", "incidents", "events", "audit_log",
+               "irrigation_events")
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     "pump": {
@@ -33,6 +34,18 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "min_off_minutes": 3,
         "check_minutes": 5,        # sau ngần này phút phải thấy độ ẩm tăng
         "min_rise_pct": 3,         # độ ẩm phải tăng ít nhất bấy nhiêu %
+    },
+    "irrigation": {                # phản hồi đất trên mỗi lít nước (irrigation.py)
+        "settle_seconds": 120,     # chờ nước thấm tới cảm biến sau khi bơm tắt (chậu nhỏ: 1–3 phút)
+        "after_window_seconds": 20,  # lấy trung vị độ ẩm trong ngần này giây cuối làm "sau khi tưới"
+        "before_seconds": 60,      # trung vị độ ẩm trong 60 giây trước khi bơm bật làm "trước khi tưới"
+        "min_liters": 0.05,        # ít nước hơn -> không đánh giá
+        "max_start_soil_pct": 85,  # đất đã gần bão hoà -> không đánh giá
+        "exclude_if_mist": True,   # phun sương chạy trong lúc tưới -> bỏ qua (nhiễu)
+        "baseline_events": 20,     # số lần tưới gần nhất dùng để học mức bình thường
+        "min_baseline_events": 5,  # chưa đủ -> trạng thái "learning"
+        "zscore_threshold": 3,     # |z| ≥ ngưỡng -> bất thường
+        "test_seconds": 15,        # thời gian tưới thử khi kiểm chứng khắc phục
     },
     "health": {
         "offline_after_s": 30,
@@ -122,6 +135,8 @@ class Database:
         await self.db.events.create_index([("device_id", 1), ("ts", -1)])
         await self.db.events.create_index("ts", expireAfterSeconds=settings.telemetry_ttl_days * 86400)
         await self.db.audit_log.create_index([("ts", -1)])
+        await self.db.irrigation_events.create_index([("device_id", 1), ("ended_at", -1)])
+        await self.db.irrigation_events.create_index([("device_id", 1), ("status", 1), ("ended_at", -1)])
 
         await self.db.settings.update_one(
             {"_id": settings.site},
@@ -132,6 +147,16 @@ class Database:
     async def get_settings(self) -> dict:
         doc = await self.db.settings.find_one({"_id": settings.site}) or {}
         return deep_merge(DEFAULT_SETTINGS, {k: v for k, v in doc.items() if k in DEFAULT_SETTINGS})
+
+    async def get_settings_cached(self, max_age_s: float = 5.0) -> dict:
+        """Cho luồng ingest (mỗi bản tin): tránh một lần đọc MongoDB cho từng bản tin telemetry."""
+        now = utcnow()
+        cached = getattr(self, "_settings_cache", None)
+        if cached and (now - cached[0]).total_seconds() < max_age_s:
+            return cached[1]
+        cfg = await self.get_settings()
+        self._settings_cache = (now, cfg)
+        return cfg
 
 
 db = Database()

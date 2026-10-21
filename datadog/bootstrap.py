@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.parse
@@ -25,24 +26,66 @@ sys.path.insert(0, str(HERE))
 import definitions as defs  # noqa: E402
 
 
+def _clean(value: str) -> str:
+    value = value.strip()
+    if value[:1] in "\"'" and value[-1:] == value[:1]:
+        return value[1:-1]
+    return re.split(r"\s+#", value, maxsplit=1)[0].strip()   # bỏ chú thích cuối dòng
+
+
 def load_env() -> None:
     env_file = HERE.parent / ".env"
     if env_file.exists():
-        for line in env_file.read_text(encoding="utf-8").splitlines():
+        for line in env_file.read_text(encoding="utf-8-sig").splitlines():
             line = line.strip()
             if line and not line.startswith("#") and "=" in line:
                 k, v = line.split("=", 1)
-                os.environ.setdefault(k.strip(), v.strip())
+                os.environ.setdefault(k.strip(), _clean(v))
+
+
+def normalize_site(site: str) -> str:
+    """Chấp nhận cả 'app.datadoghq.com/', 'https://us5.datadoghq.com' ... -> 'datadoghq.com', 'us5.datadoghq.com'."""
+    site = re.sub(r"^https?://", "", site.strip()).strip("/")
+    site = re.sub(r"^(app|api)\.", "", site)
+    return site or "datadoghq.com"
 
 
 class Datadog:
     def __init__(self) -> None:
-        self.api_key = os.environ.get("DD_API_KEY", "")
-        self.app_key = os.environ.get("DD_APP_KEY", "")
-        site = os.environ.get("DD_SITE", "datadoghq.com")
-        self.base = f"https://api.{site}"
+        self.api_key = os.environ.get("DD_API_KEY", "").strip()
+        self.app_key = os.environ.get("DD_APP_KEY", "").strip()
+        self.site = normalize_site(os.environ.get("DD_SITE", "datadoghq.com"))
+        self.base = f"https://api.{self.site}"
         if not self.api_key or not self.app_key:
             sys.exit("Thiếu DD_API_KEY hoặc DD_APP_KEY (Organization Settings → API Keys / Application Keys)")
+        print(f"Site: {self.site} | API key ...{self.api_key[-4:]} ({len(self.api_key)} ký tự, cần 32) | "
+              f"App key ...{self.app_key[-4:]} ({len(self.app_key)} ký tự, cần 40)")
+        self.preflight()
+
+    def preflight(self) -> None:
+        """Tách bạch lỗi API key và lỗi Application key trước khi tạo cấu hình."""
+        req = urllib.request.Request(self.base + "/api/v1/validate", headers={"DD-API-KEY": self.api_key})
+        try:
+            urllib.request.urlopen(req, timeout=20).read()
+            print("✓ API key hợp lệ với site", self.site)
+        except urllib.error.URLError as e:
+            if not isinstance(e, urllib.error.HTTPError):
+                sys.exit(f"✗ Không kết nối được {self.base}: {e.reason}. Kiểm tra DD_SITE, mạng/VPN/diệt virus.")
+            sys.exit(f"✗ API key KHÔNG hợp lệ với site {self.site} (HTTP {e.code}). "
+                     "Kiểm tra DD_SITE (vd. datadoghq.com, us5.datadoghq.com) và chép lại API key.")
+        try:
+            self.call("GET", "/api/v1/monitor", query={"page_size": 1})
+            print("✓ Application key hợp lệ")
+        except RuntimeError as e:
+            if "HTTP 401" in str(e) or "HTTP 403" in str(e):
+                sys.exit("✗ Application key bị từ chối. Cách sửa:\n"
+                         "  1. Organization Settings → Application Keys → New Key, chép NGAY giá trị key "
+                         "(chuỗi 40 ký tự, KHÔNG phải 'Key ID').\n"
+                         "  2. Key phải tạo trong CÙNG tổ chức/tài khoản với API key.\n"
+                         "  3. Nếu key có 'Scopes', cấp: monitors_read, monitors_write, dashboards_read, "
+                         "dashboards_write, slos_read, slos_write (hoặc để không giới hạn scope).\n"
+                         f"  Chi tiết: {e}")
+            raise
 
     def call(self, method: str, path: str, body=None, query: dict | None = None):
         url = self.base + path + ("?" + urllib.parse.urlencode(query) if query else "")
@@ -76,25 +119,34 @@ def apply(dd: Datadog) -> None:
         print("! Bỏ qua webhook: cần PUBLIC_BASE_URL và DATADOG_WEBHOOK_TOKEN (Datadog phải gọi được backend từ Internet)")
 
     existing = {m["name"]: m["id"] for m in dd.call("GET", "/api/v1/monitor", query={"monitor_tags": defs.APP_TAG})}
+    failed = []
     for mon in defs.MONITORS:
-        if mon["name"] in existing:
-            dd.call("PUT", f"/api/v1/monitor/{existing[mon['name']]}", mon)
-            print(f"✓ monitor updated: {mon['name']}")
-        else:
-            dd.call("POST", "/api/v1/monitor", mon)
-            print(f"✓ monitor created: {mon['name']}")
+        try:
+            if mon["name"] in existing:
+                dd.call("PUT", f"/api/v1/monitor/{existing[mon['name']]}", mon)
+                print(f"✓ monitor updated: {mon['name']}")
+            else:
+                dd.call("POST", "/api/v1/monitor", mon)
+                print(f"✓ monitor created: {mon['name']}")
+        except RuntimeError as e:   # một monitor lỗi không chặn phần còn lại
+            failed.append(mon["name"])
+            print(f"✗ monitor FAILED: {mon['name']}\n    {e}")
 
     slo_ids = []
     current = {s["name"]: s["id"] for s in dd.call("GET", "/api/v1/slo", query={"tags_query": defs.APP_TAG}).get("data", [])}
     for slo in defs.SLOS:
-        if slo["name"] in current:
-            dd.call("PUT", f"/api/v1/slo/{current[slo['name']]}", slo)
-            slo_ids.append(current[slo["name"]])
-            print(f"✓ SLO updated: {slo['name']}")
-        else:
-            res = dd.call("POST", "/api/v1/slo", slo)
-            slo_ids.append(res["data"][0]["id"])
-            print(f"✓ SLO created: {slo['name']}")
+        try:
+            if slo["name"] in current:
+                dd.call("PUT", f"/api/v1/slo/{current[slo['name']]}", slo)
+                slo_ids.append(current[slo["name"]])
+                print(f"✓ SLO updated: {slo['name']}")
+            else:
+                res = dd.call("POST", "/api/v1/slo", slo)
+                slo_ids.append(res["data"][0]["id"])
+                print(f"✓ SLO created: {slo['name']}")
+        except RuntimeError as e:
+            failed.append(slo["name"])
+            print(f"✗ SLO FAILED: {slo['name']}\n    {e}")
 
     board = defs.dashboard(slo_ids)
     dashboards = dd.call("GET", "/api/v1/dashboard").get("dashboards", [])
@@ -103,7 +155,11 @@ def apply(dd: Datadog) -> None:
         res = dd.call("PUT", f"/api/v1/dashboard/{match['id']}", board)
     else:
         res = dd.call("POST", "/api/v1/dashboard", board)
-    print(f"✓ dashboard: https://app.{os.environ.get('DD_SITE', 'datadoghq.com')}{res.get('url', '')}")
+    print(f"✓ dashboard: https://app.{dd.site}{res.get('url', '')}")
+    if failed:
+        print(f"\n! {len(failed)} mục lỗi: {', '.join(failed)} – gửi phần thông báo lỗi ở trên để sửa, rồi chạy lại apply.")
+    else:
+        print(f"\n✓ Hoàn tất: {len(defs.MONITORS)} monitors, {len(defs.SLOS)} SLO, 1 dashboard.")
 
 
 def delete(dd: Datadog) -> None:

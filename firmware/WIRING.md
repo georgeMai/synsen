@@ -1,5 +1,9 @@
 # AgriGuard – Sơ đồ đấu dây phần cứng
 
+![Sơ đồ đấu dây](wiring-diagram.png)
+
+Bản vector (phóng to không vỡ, chèn vào slide): [wiring-diagram.svg](wiring-diagram.svg)
+
 Toàn bộ hệ thống chạy **một nguồn 5V 3A** (bơm 3–7V và máy phun sương USB‑C đều dùng 5V).
 ESP32 chỉ đóng/ngắt relay, **không cấp điện trực tiếp cho tải**. Mọi GND nối chung.
 
@@ -26,8 +30,8 @@ ESP32 chỉ đóng/ngắt relay, **không cấp điện trực tiếp cho tải*
 | **Cảm biến ẩm đất** | VCC / AO / GND | 3V3 / **GPIO34** / GND |
 | **YF‑S201** | Đỏ / Đen / Vàng | 5V / GND / **cầu phân áp → GPIO35** |
 | **Relay 1 (bơm)** | VCC / GND / IN | 5V / GND / **GPIO26** |
-| **Relay 2 (phun sương)** | VCC / GND / IN | 5V / GND / **GPIO27** |
-| **TFT ILI9341** | SCK / MOSI / MISO / CS / DC / RST | 18 / 23 / 19 / 5 / 2 / 14 (sửa CS, DC trong `config.h` nếu bạn đấu khác) |
+| **Relay 2 (phun sương)** | VCC / GND / IN | 5V / GND / **GPIO25** |
+| **TFT ILI9341** | SCK / MOSI / MISO / CS / DC / RST | 18 / 23 / 19 / 5 / 27 / 14 (sửa CS, DC trong `config.h` nếu bạn đấu khác) |
 
 GPIO34 và GPIO35 nằm trên ADC1 và chỉ nhận đầu vào – đúng nhu cầu. Không dùng GPIO 0, 12, 15 cho relay.
 

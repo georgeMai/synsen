@@ -362,6 +362,195 @@
     {
       "definition": {
         "type": "group",
+        "title": "Phản hồi đất trên mỗi lít nước (phát hiện bất thường)",
+        "layout_type": "ordered",
+        "widgets": [
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Phản hồi đất (%/L) từng lần tưới vs mức bình thường",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "q": "avg:agriguard.irrigation.response_pct_per_liter{$device_id} by {device_id}",
+                  "display_type": "line"
+                },
+                {
+                  "q": "avg:agriguard.irrigation.baseline_pct_per_liter{$device_id} by {device_id}",
+                  "display_type": "line"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Độ lệch so với bình thường (robust z-score)",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "q": "avg:agriguard.irrigation.response_zscore{$device_id} by {device_id}",
+                  "display_type": "line"
+                }
+              ],
+              "markers": [
+                {
+                  "value": "y = -3",
+                  "display_type": "error dashed",
+                  "label": "nước không tới gốc"
+                },
+                {
+                  "value": "y = 3",
+                  "display_type": "warning dashed",
+                  "label": "đất ẩm lên quá nhanh"
+                }
+              ],
+              "yaxis": {
+                "min": "-8",
+                "max": "8"
+              }
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Nước mỗi lần tưới (L)",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "q": "avg:agriguard.irrigation.liters{$device_id} by {device_id}",
+                  "display_type": "bars"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Lần tưới theo kết quả đánh giá",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "q": "sum:agriguard.irrigation.events{*} by {status}.as_count()",
+                  "display_type": "bars"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "definition": {
+        "type": "group",
+        "title": "Dự báo & phát hiện bất thường (Forecast · Prediction · Anomaly)",
+        "layout_type": "ordered",
+        "widgets": [
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Độ ẩm đất + dự báo (forecast linear)",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "q": "avg:agriguard.soil.moisture{$device_id} by {device_id}",
+                  "display_type": "line"
+                },
+                {
+                  "q": "forecast(avg:agriguard.soil.moisture{$device_id} by {device_id}, 'linear', 1)",
+                  "display_type": "line"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "query_value",
+              "title": "Đất khô tới ngưỡng tưới sau (phút)",
+              "precision": 0,
+              "autoscale": true,
+              "requests": [
+                {
+                  "q": "min:agriguard.soil.minutes_to_dry{$device_id}",
+                  "aggregator": "last"
+                }
+              ],
+              "custom_unit": "phút"
+            }
+          },
+          {
+            "definition": {
+              "type": "query_value",
+              "title": "Dự báo nước cần mỗi ngày (L)",
+              "precision": 1,
+              "autoscale": true,
+              "requests": [
+                {
+                  "q": "sum:agriguard.water.predicted_liters_per_day{$device_id}",
+                  "aggregator": "last"
+                }
+              ],
+              "custom_unit": "L"
+            }
+          },
+          {
+            "definition": {
+              "type": "query_value",
+              "title": "Nước cho lần tưới kế tiếp (L)",
+              "precision": 2,
+              "autoscale": true,
+              "requests": [
+                {
+                  "q": "avg:agriguard.irrigation.predicted_liters_next{$device_id}",
+                  "aggregator": "last"
+                }
+              ],
+              "custom_unit": "L"
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Nước tưới – dải bình thường (anomaly basic)",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "q": "anomalies(sum:agriguard.flow.volume_ml{$device_id}.as_count(), 'basic', 3)",
+                  "display_type": "bars"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Bộ nhớ trống ESP32 + dự báo",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "q": "min:agriguard.device.free_heap{$device_id} by {device_id}",
+                  "display_type": "line"
+                },
+                {
+                  "q": "forecast(min:agriguard.device.free_heap{$device_id} by {device_id}, 'linear', 1)",
+                  "display_type": "line"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "definition": {
+        "type": "group",
         "title": "Sức khoẻ thiết bị",
         "layout_type": "ordered",
         "widgets": [

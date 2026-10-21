@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
+from .irrigation import describe
 from .state import DeviceRuntime
 
 
@@ -33,6 +34,8 @@ INCIDENT_TYPES: dict[str, IncidentType] = {
     "command_timeout": IncidentType("warning", "Thiết bị không xác nhận lệnh điều khiển"),
     "power_brownout": IncidentType("warning", "ESP32 khởi động lại do sụt áp nguồn"),
     "ingest_latency": IncidentType("warning", "Đường ống dữ liệu bị chậm"),
+    "irrigation_ineffective": IncidentType("warning", "Nước tưới không tới gốc (đất không phản hồi)", ("pump",)),
+    "soil_response_high": IncidentType("warning", "Đất ẩm lên bất thường so với lượng nước (cảm biến đọng nước?)"),
 }
 
 GENERIC = IncidentType("warning", "Sự cố khác")
@@ -146,6 +149,14 @@ def evaluate(rt: DeviceRuntime, cfg: dict, now: datetime) -> list[Finding]:
                         f"Phun sương nhưng độ ẩm chỉ thay đổi {rise:+.1f}% trong {m['check_minutes']:g} phút "
                         f"(hiện {recent_avg:.0f}%, cần tăng ≥ {m['min_rise_pct']}% hoặc đạt {m['air_max_pct']}%)",
                         {"humidity_rise_pct": round(rise, 1), "humidity_pct": round(recent_avg, 1)}))
+
+    # --- Phản hồi đất trên mỗi lít nước (lần tưới gần nhất đã chấm điểm) ---
+    ev = rt.last_assessed
+    if ev and ev["status"] in ("low_response", "high_response"):
+        ctx = {k: ev.get(k) for k in ("liters", "rise_pct", "ratio_pct_per_l", "baseline_pct_per_l", "baseline_n",
+                                     "zscore", "irrigation_id")}
+        findings.append(Finding("irrigation_ineffective" if ev["status"] == "low_response" else "soil_response_high",
+                                ev["started_at"], describe(ev), ctx))
     return findings
 
 
@@ -154,8 +165,8 @@ def sensor_health(rt: DeviceRuntime, findings: list[Finding]) -> dict[str, str]:
     latest = rt.latest
     return {
         "dht11": "fault" if "dht_fault" in types or (latest and not latest.dht_ok) else "ok",
-        "soil": "fault" if types & {"soil_sensor_fault", "soil_sensor_stuck"} else "ok",
+        "soil": "fault" if types & {"soil_sensor_fault", "soil_sensor_stuck", "soil_response_high"} else "ok",
         "flow": "fault" if types & {"flow_without_pump"} else "ok",
-        "pump": "fault" if types & {"pump_dry_run", "pump_overrun"} else "ok",
+        "pump": "fault" if types & {"pump_dry_run", "pump_overrun", "irrigation_ineffective"} else "ok",
         "mist": "fault" if types & {"mist_ineffective", "mist_overrun"} else "ok",
     }

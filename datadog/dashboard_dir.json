@@ -1,0 +1,492 @@
+{
+  "title": "AgriGuard – Detect · Investigate · Resolve",
+  "description": "Dashboard demo theo kịch bản D-I-R (ESP32 → MQTT → FastAPI → MongoDB → Datadog).",
+  "layout_type": "ordered",
+  "template_variables": [
+    {
+      "name": "device_id",
+      "prefix": "device_id",
+      "default": "*"
+    }
+  ],
+  "widgets": [
+    {
+      "definition": {
+        "type": "group",
+        "title": "1. Overview – Hệ thống có ổn không?",
+        "background_color": "vivid_blue",
+        "layout_type": "ordered",
+        "widgets": [
+          {
+            "definition": {
+              "type": "query_value",
+              "title": "Thiết bị online",
+              "precision": 1,
+              "autoscale": true,
+              "requests": [
+                {
+                  "q": "sum:agriguard.device.online{*}",
+                  "aggregator": "last"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "query_value",
+              "title": "Sự cố đang mở",
+              "precision": 1,
+              "autoscale": true,
+              "requests": [
+                {
+                  "q": "sum:agriguard.incident.open{*}",
+                  "aggregator": "last"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "manage_status",
+              "title": "Trạng thái monitor",
+              "query": "tag:app:agriguard",
+              "summary_type": "monitors",
+              "display_format": "countsAndList",
+              "sort": "status,asc",
+              "color_preference": "text",
+              "hide_zero_counts": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "definition": {
+        "type": "group",
+        "title": "2. Detect – Có gì bất thường?",
+        "background_color": "vivid_pink",
+        "layout_type": "ordered",
+        "widgets": [
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Bơm (1 = chạy) vs lưu lượng (L/phút)",
+              "show_legend": true,
+              "requests": [
+                {
+                  "q": "max:agriguard.pump.state{$device_id}",
+                  "display_type": "line"
+                },
+                {
+                  "q": "avg:agriguard.flow.rate{$device_id}",
+                  "display_type": "line"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Cảm biến hoạt động (1 = OK)",
+              "show_legend": true,
+              "requests": [
+                {
+                  "q": "min:agriguard.sensor.ok{$device_id} by {sensor}",
+                  "display_type": "line"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Lỗi đang hoạt động theo loại",
+              "show_legend": true,
+              "requests": [
+                {
+                  "q": "max:agriguard.fault.active{$device_id} by {fault}",
+                  "display_type": "bars"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Phản hồi đất/lít – độ lệch so với bình thường (z-score)",
+              "show_legend": true,
+              "requests": [
+                {
+                  "q": "avg:agriguard.irrigation.response_zscore{$device_id} by {device_id}",
+                  "display_type": "line"
+                }
+              ],
+              "markers": [
+                {
+                  "value": "y = -3",
+                  "display_type": "error dashed",
+                  "label": "nước không tới gốc"
+                },
+                {
+                  "value": "y = 3",
+                  "display_type": "warning dashed",
+                  "label": "đất ẩm lên quá nhanh"
+                }
+              ],
+              "yaxis": {
+                "min": "-8",
+                "max": "8"
+              }
+            }
+          },
+          {
+            "definition": {
+              "type": "manage_status",
+              "title": "Monitor đang báo động",
+              "query": "tag:app:agriguard status:alert",
+              "summary_type": "monitors",
+              "display_format": "countsAndList",
+              "sort": "status,asc",
+              "color_preference": "text",
+              "hide_zero_counts": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "definition": {
+        "type": "group",
+        "title": "3. Investigate – Vì sao xảy ra?",
+        "background_color": "vivid_yellow",
+        "layout_type": "ordered",
+        "widgets": [
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Khởi động lại theo nguyên nhân",
+              "show_legend": true,
+              "requests": [
+                {
+                  "q": "sum:agriguard.device.reboots{*} by {reset_reason}.as_count()",
+                  "display_type": "bars"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Phản hồi đất (%/L) từng lần tưới vs mức bình thường",
+              "show_legend": true,
+              "requests": [
+                {
+                  "q": "avg:agriguard.irrigation.response_pct_per_liter{$device_id} by {device_id}",
+                  "display_type": "line"
+                },
+                {
+                  "q": "avg:agriguard.irrigation.baseline_pct_per_liter{$device_id} by {device_id}",
+                  "display_type": "line"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Nước mỗi lần tưới (L)",
+              "show_legend": true,
+              "requests": [
+                {
+                  "q": "avg:agriguard.irrigation.liters{$device_id} by {device_id}",
+                  "display_type": "bars"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Wi-Fi RSSI (dBm)",
+              "show_legend": true,
+              "requests": [
+                {
+                  "q": "avg:agriguard.device.rssi{$device_id} by {device_id}",
+                  "display_type": "line"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Độ trễ ingest & ghi MongoDB p95 (ms)",
+              "show_legend": true,
+              "requests": [
+                {
+                  "q": "avg:agriguard.ingest.latency_ms.95percentile{*}",
+                  "display_type": "line"
+                },
+                {
+                  "q": "avg:agriguard.mongo.write_latency_ms.95percentile{*}",
+                  "display_type": "line"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Lệnh: gửi / xác nhận / quá hạn",
+              "show_legend": true,
+              "requests": [
+                {
+                  "q": "sum:agriguard.command.sent{*}.as_count()",
+                  "display_type": "bars"
+                },
+                {
+                  "q": "sum:agriguard.command.acked{*}.as_count()",
+                  "display_type": "bars"
+                },
+                {
+                  "q": "sum:agriguard.command.timeout{*}.as_count()",
+                  "display_type": "bars"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "log_stream",
+              "title": "Log cảnh báo & lỗi backend",
+              "query": "service:agriguard-backend status:(warn OR error)",
+              "columns": [
+                "service",
+                "device_id",
+                "incident_id"
+              ],
+              "indexes": [],
+              "message_display": "expanded-md",
+              "show_date_column": true,
+              "show_message_column": true,
+              "sort": {
+                "column": "time",
+                "order": "desc"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "definition": {
+        "type": "group",
+        "title": "4. Resolve – Đã khắc phục chưa, mất bao lâu?",
+        "background_color": "vivid_green",
+        "layout_type": "ordered",
+        "widgets": [
+          {
+            "definition": {
+              "type": "toplist",
+              "title": "MTTD trung bình theo loại (giây)",
+              "requests": [
+                {
+                  "q": "top(avg:agriguard.incident.mttd_seconds.avg{*} by {type}, 10, 'mean', 'desc')"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "toplist",
+              "title": "MTTR trung bình theo loại (giây)",
+              "requests": [
+                {
+                  "q": "top(avg:agriguard.incident.mttr_seconds.avg{*} by {type}, 10, 'mean', 'desc')"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Sự cố mở vs đóng",
+              "show_legend": true,
+              "requests": [
+                {
+                  "q": "sum:agriguard.incident.opened{*}.as_count()",
+                  "display_type": "bars"
+                },
+                {
+                  "q": "sum:agriguard.incident.resolved{*}.as_count()",
+                  "display_type": "bars"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Kiểm chứng thất bại (từ chối đóng khi chưa sửa)",
+              "show_legend": true,
+              "requests": [
+                {
+                  "q": "sum:agriguard.incident.verification_failed{*}.as_count()",
+                  "display_type": "bars"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "definition": {
+        "type": "group",
+        "title": "5. Dự báo – Forecast · Prediction · Anomaly",
+        "background_color": "vivid_purple",
+        "layout_type": "ordered",
+        "widgets": [
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Độ ẩm đất + dự báo (forecast)",
+              "show_legend": true,
+              "requests": [
+                {
+                  "q": "avg:agriguard.soil.moisture{$device_id} by {device_id}",
+                  "display_type": "line"
+                },
+                {
+                  "q": "forecast(avg:agriguard.soil.moisture{$device_id} by {device_id}, 'linear', 1)",
+                  "display_type": "line"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "query_value",
+              "title": "Đất khô tới ngưỡng tưới sau (phút)",
+              "precision": 1,
+              "autoscale": true,
+              "requests": [
+                {
+                  "q": "min:agriguard.soil.minutes_to_dry{$device_id}",
+                  "aggregator": "last"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "query_value",
+              "title": "Dự báo nước cần mỗi ngày (L)",
+              "precision": 1,
+              "autoscale": true,
+              "requests": [
+                {
+                  "q": "sum:agriguard.water.predicted_liters_per_day{$device_id}",
+                  "aggregator": "last"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "query_value",
+              "title": "Nước cho lần tưới kế tiếp (L)",
+              "precision": 1,
+              "autoscale": true,
+              "requests": [
+                {
+                  "q": "avg:agriguard.irrigation.predicted_liters_next{$device_id}",
+                  "aggregator": "last"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Nước tưới – dải bình thường (anomaly)",
+              "show_legend": true,
+              "requests": [
+                {
+                  "q": "anomalies(sum:agriguard.flow.volume_ml{$device_id}.as_count(), 'basic', 3)",
+                  "display_type": "bars"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Bộ nhớ trống ESP32 + dự báo",
+              "show_legend": true,
+              "requests": [
+                {
+                  "q": "min:agriguard.device.free_heap{$device_id} by {device_id}",
+                  "display_type": "line"
+                },
+                {
+                  "q": "forecast(min:agriguard.device.free_heap{$device_id} by {device_id}, 'linear', 1)",
+                  "display_type": "line"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "definition": {
+        "type": "group",
+        "title": "6. Môi trường",
+        "background_color": "gray",
+        "layout_type": "ordered",
+        "widgets": [
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Nhiệt độ không khí (°C)",
+              "show_legend": true,
+              "requests": [
+                {
+                  "q": "avg:agriguard.air.temperature{$device_id} by {device_id}",
+                  "display_type": "line"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Độ ẩm không khí (%)",
+              "show_legend": true,
+              "requests": [
+                {
+                  "q": "avg:agriguard.air.humidity{$device_id} by {device_id}",
+                  "display_type": "line"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Độ ẩm đất (%)",
+              "show_legend": true,
+              "requests": [
+                {
+                  "q": "avg:agriguard.soil.moisture{$device_id} by {device_id}",
+                  "display_type": "line"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

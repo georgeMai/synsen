@@ -51,14 +51,15 @@ Script tự làm các việc sau:
 ## Bước 4 – Việc làm tay
 - **MongoDB Atlas → Network Access:** thêm IP của VPS.
 - **Tường lửa của nhà cung cấp VPS** (nếu có): mở TCP **80, 443, 1883**.
-- **ESP32:** sửa `firmware/agriguard_esp32/secrets.h` theo đúng cấu hình script đã in ra, ví dụ:
-  ```cpp
-  #define MQTT_HOST     "synsen.net"
-  #define MQTT_PORT     1883
-  #define MQTT_USER     "agriguard"
-  #define MQTT_PASSWORD "<script in ra>"
-  ```
-  Sau đó nạp lại firmware. Thiết bị `esp32-01` sẽ hiện trên web với nhãn "thật".
+- **ESP32:** kết nối điện thoại vào Wi‑Fi `AgriGuard-esp32-01` (mật khẩu mặc định `agriguard123`), mở http://192.168.4.1, chọn Wi‑Fi và điền MQTT theo cấu hình script đã in ra:
+  | Ô | Giá trị |
+  |---|---|
+  | MQTT host | `synsen.net` |
+  | MQTT port | `1883` |
+  | MQTT user | `agriguard` |
+  | MQTT password | giá trị `MQTT_PASSWORD` trong `.env` trên VPS |
+
+  Hoặc điền sẵn các giá trị này vào `firmware/agriguard_esp32/secrets.h` trước khi nạp firmware. Thiết bị `esp32-01` sẽ hiện trên web với nhãn "thật".
 
 ## Bước 5 – Kiểm tra
 | Kiểm tra | Kết quả đúng |

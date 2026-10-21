@@ -90,6 +90,18 @@
   // ------------------------------------------------------------------ render: KPIs
   function statusTag(cls, label) { return `<span class="status ${cls}">${esc(label)}</span>`; }
 
+  function fmtDuration(min) {
+    if (min == null) return "–";
+    if (min < 1) return "< 1 phút";
+    if (min < 120) return `${Math.round(min)} phút`;
+    if (min < 48 * 60) return `${(min / 60).toFixed(1)} giờ`;
+    return `${Math.round(min / 1440)} ngày`;
+  }
+  function dryHint(p) {
+    if (!p || p.minutes_to_dry == null) return "";
+    return p.minutes_to_dry <= 0 ? " · đã tới ngưỡng tưới" : ` · dự báo khô tới ngưỡng sau ~${fmtDuration(p.minutes_to_dry)}`;
+  }
+
   function renderKpis() {
     const d = device();
     const k = $("#kpis");
@@ -110,7 +122,8 @@
       dhtOk ? tile("Độ ẩm không khí", "", num(L.air_humidity_pct, 0), "%", cfg ? `Phun khi < ${cfg.mist.air_dry_pct}% · tối đa ${cfg.mist.air_max_pct}%` : "")
             : tile("Độ ẩm không khí", statusTag("critical", "Lỗi"), "Mất tín hiệu", "", "", true),
       L.soil_ok === false ? tile("Độ ẩm đất", soilTag, "Lỗi", "", `ADC = ${L.soil_raw ?? "–"}`, true)
-            : tile("Độ ẩm đất", soilTag, num(L.soil_moisture_pct, 0), "%", cfg ? `Tưới < ${cfg.pump.soil_dry_pct}% · dừng ≥ ${cfg.pump.soil_target_pct}%` : ""),
+            : tile("Độ ẩm đất", soilTag, num(L.soil_moisture_pct, 0), "%",
+                   (cfg ? `Tưới < ${cfg.pump.soil_dry_pct}% · dừng ≥ ${cfg.pump.soil_target_pct}%` : "") + dryHint(d.prediction)),
       tile("Lưu lượng nước", L.pump_on ? statusTag("good", "Bơm chạy") : statusTag("idle", "Bơm tắt"), num(L.flow_lpm, 2), "L/phút",
            L.pump_on && L.flow_lpm < (cfg?.pump.min_flow_lpm ?? 0.3) ? "⚠ Bơm chạy nhưng không có nước" : "YF‑S201"),
       tile("Thiết bị", online ? statusTag("good", "Online") : statusTag("critical", "Offline"), esc(d._id), "",
@@ -179,7 +192,8 @@
         <span>Hôm nay: nước đã tưới <b>${num(today.water_liters, 1)} L</b></span>
         <span>bơm chạy <b>${num(today.pump_minutes, 1)} phút</b> (${today.pump_starts} lần bật)</span>
         <span>phun sương <b>${num(today.mist_minutes, 1)} phút</b></span>
-        <span>nhiệt độ <b>${num(today.temp_min)}–${num(today.temp_max)} °C</b></span>`;
+        <span>nhiệt độ <b>${num(today.temp_min)}–${num(today.temp_max)} °C</b></span>
+        ${d.prediction?.liters_per_day != null ? `<span title="tốc độ khô của đất ÷ phản hồi đất trên mỗi lít (đã học)">dự báo cần <b>${num(d.prediction.liters_per_day, 1)} L/ngày</b> · lần tưới tới ~<b>${num(d.prediction.liters_next_irrigation, 2)} L</b></span>` : ""}`;
     } catch (e) { console.warn(e); }
   }
 
@@ -246,6 +260,9 @@
     mist: ["Phun sương", [["hot_temp_c", "Trời nóng – bật phun (°C)"], ["temp_hysteresis_c", "Độ trễ nhiệt (°C)"], ["air_dry_pct", "Không khí khô – bật phun (%)"],
       ["air_target_pct", "Độ ẩm mục tiêu (%)"], ["air_max_pct", "Độ ẩm tối đa – không phun (%)"], ["max_minutes", "Chạy tối đa mỗi lần (phút)"],
       ["min_off_minutes", "Nghỉ tối thiểu (phút)"], ["check_minutes", "Kiểm tra hiệu quả sau (phút)"], ["min_rise_pct", "Độ ẩm phải tăng ít nhất (%)"]]],
+    irrigation: ["Phản hồi đất / lít nước", [["settle_seconds", "Chờ nước thấm sau khi tắt bơm (giây)"], ["min_baseline_events", "Số lần tưới để học mức bình thường"],
+      ["baseline_events", "Số lần tưới gần nhất dùng làm chuẩn"], ["zscore_threshold", "Ngưỡng bất thường |z|"], ["min_liters", "Lượng nước tối thiểu để đánh giá (L)"],
+      ["max_start_soil_pct", "Không đánh giá khi đất đã ẩm hơn (%)"], ["test_seconds", "Tưới thử khi kiểm chứng (giây)"]]],
     health: ["Giám sát", [["offline_after_s", "Coi là offline sau (giây)"], ["stuck_minutes", "Cảm biến đơ sau (phút)"], ["sensor_fail_count", "Số lần đọc lỗi liên tiếp"], ["rssi_weak_dbm", "Wi‑Fi yếu dưới (dBm)"]]],
   };
 
@@ -262,6 +279,7 @@
     ["dry_run", "Bơm chạy khô", "Hết nước / tắc ống: bơm chạy nhưng lưu lượng = 0"],
     ["leak", "Rò nước / relay kẹt", "Có dòng chảy khi bơm đang tắt"],
     ["mist_empty", "Máy phun hết nước", "Phun sương không làm tăng độ ẩm"],
+    ["hose_off", "Ống tưới tuột khỏi gốc", "Bơm chạy, có lưu lượng nhưng đất không ẩm lên (phát hiện sau lần tưới kế tiếp)"],
     ["dht_fail", "DHT11 hỏng", "Cảm biến nhiệt độ/độ ẩm trả lỗi"],
     ["soil_disconnect", "Tuột dây cảm biến đất", "ADC = 4095"],
     ["soil_stuck", "Cảm biến đất bị đơ", "Giá trị không đổi (phát hiện sau ~10 phút)"],

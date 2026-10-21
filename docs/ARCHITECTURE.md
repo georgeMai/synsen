@@ -145,6 +145,33 @@ Index phụ: `{meta.device_id: 1, ts: -1}`.
 
 **`events`** – sự kiện thiết bị (safety lockout, reboot, LWT…), TTL 30 ngày. **`audit_log`** – ai đổi ngưỡng, bấm lệnh hay xử lý sự cố.
 
+**`irrigation_events`** – mỗi lần tưới một document, là "bộ nhớ" để học mức phản hồi bình thường của từng luống
+(index `{device_id, status, ended_at}`):
+```js
+{ _id: "IRR-261021-062721-esp32-01", device_id: "esp32-01", zone: "bed-1", source: "real",
+  started_at: ISODate(), ended_at: ISODate(), pump_seconds: 12, liters: 0.35,        // từ bộ đếm YF-S201
+  soil_before: 41.2, soil_after: 41.9, drying_correction_pct: 0.4, rise_pct: 1.1,    // %, đã bù bay hơi
+  ratio_pct_per_l: 3.1, baseline_pct_per_l: 11.7, baseline_n: 20, zscore: -4.7,       // robust z-score
+  status: "low_response",          // learning | normal | low_response | high_response | excluded
+  reason: "water_not_reaching_roots" }
+```
+
+### Phát hiện bất thường "phản hồi đất trên mỗi lít nước" (`backend/app/irrigation.py`)
+Mỗi lần tưới: **%/L = (độ ẩm sau khi thấm − độ ẩm trước khi tưới + phần bay hơi) / số lít YF‑S201 đếm được**.
+- *Trước khi tưới:* trung vị 60 giây trước khi bơm bật; *tốc độ khô* = độ dốc hồi quy của đoạn đó.
+- *Sau khi tưới:* trung vị 20 giây cuối của khoảng chờ thấm (`settle_seconds`, mặc định 120 giây).
+- *Mức bình thường:* trung vị và MAD của 20 lần tưới hợp lệ gần nhất (truy vấn `irrigation_events`);
+  `z = (%/L − trung vị) / max(1.4826·MAD, 12% trung vị, 0.5)`. Cần ≥ 5 lần tưới (trạng thái `learning`).
+- *Loại khỏi đánh giá:* nước < 0.05 L, đất đã > 85%, cảm biến bão hoà/lỗi, phun sương chạy cùng lúc.
+- `z ≤ −3` → incident **`irrigation_ineffective`** (nước chảy nhưng không tới gốc: tuột/rò ống, cảm biến lệch vùng rễ),
+  khoá tưới tự động. `z ≥ +3` → **`soil_response_high`** (cảm biến đọng nước, đất bị nén).
+- *Kiểm chứng khắc phục:* tưới thử `test_seconds`, chờ thấm, chỉ đóng khi lần tưới thử có `status: normal`.
+
+Không ngưỡng tĩnh nào bắt được lỗi này: bơm vẫn chạy, lưu lượng vẫn bình thường, độ ẩm vẫn trong khoảng hợp lệ.
+Lý do tự tính z-score ở backend thay vì dùng `anomalies()` của Datadog: mỗi lần tưới chỉ là **một điểm dữ liệu thưa**
+(vài lần mỗi ngày), trong khi thuật toán anomaly của Datadog cần chuỗi đều đặn và lịch sử dài. Backend lưu lịch sử trong
+MongoDB, tính độ lệch thống kê bền vững rồi gửi `irrigation.response_zscore` lên Datadog để monitor cảnh báo và vẽ.
+
 **Aggregation tiêu biểu** (`backend/app/api.py`):
 - Biểu đồ: `$match` theo thiết bị và khoảng thời gian, sau đó `$group` theo bucket thời gian (`$toLong: "$ts"` − `$mod`) với `$avg` cho cảm biến và `$max` cho trạng thái bơm/phun. Kết quả khoảng 240 điểm cho mọi khoảng thời gian.
 - Thống kê hôm nay (theo giờ Việt Nam): lít nước đã tưới (tích phân `flow_lpm`), số phút bơm chạy, số phút phun sương, min/max nhiệt độ.
@@ -172,6 +199,11 @@ Tag chung: `env`, `service`, `device_id`, `site`, `zone`, `source:real|sim`.
 | Pipeline | `mqtt.messages_received` (tag `kind`), `mqtt.connects`, `mqtt.disconnects` | count | |
 | | `ingest.messages`, `ingest.within_slo`, `ingest.invalid_payload`, `ingest.errors` | count | SLO |
 | | `ingest.latency_ms` (đo → ghi xong), `mongo.write_latency_ms` | histogram | |
+| Tưới | `irrigation.response_pct_per_liter` (tag `status`), `irrigation.liters` | gauge | mỗi lần tưới |
+| | `irrigation.response_zscore`, `irrigation.baseline_pct_per_liter` | gauge | lặp lại mỗi 5 giây (chuỗi liên tục cho monitor) |
+| | `irrigation.events` (tag `status`, `reason`) | count | |
+| Dự báo | `soil.drying_pct_per_hour`, `soil.minutes_to_dry` | gauge | backend dự báo bao lâu nữa đất khô tới ngưỡng tưới |
+| | `water.predicted_liters_per_day`, `irrigation.predicted_liters_next` | gauge | = tốc độ khô ÷ phản hồi đất đã học |
 | Sự cố | `incident.open` (tag `type`, `severity`) | gauge | |
 | | `incident.opened`, `incident.resolved`, `incident.verification_failed` | count | |
 | | `incident.mttd_seconds`, `incident.mttr_seconds`, `incident.time_to_ack_seconds` | histogram | |
@@ -182,7 +214,7 @@ Ngoài custom metrics còn có:
 - **HTTP check** `/api/health` và **TCP check** broker 1883.
 - **Datadog events:** mỗi incident mở hoặc đóng sinh một event trên timeline Datadog.
 
-### Monitors (14, tag `app:agriguard`, định nghĩa trong `datadog/definitions.py`)
+### Monitors (20, tag `app:agriguard`, định nghĩa trong `datadog/definitions.py`)
 
 | Monitor | Truy vấn (rút gọn) | Loại incident |
 |---|---|---|
@@ -194,21 +226,55 @@ Ngoài custom metrics còn có:
 | Lệnh không được xác nhận | `sum(last_5m): command.timeout > 0` | `command_timeout` |
 | Brownout | `sum(last_10m): device.reboots{reset_reason:brownout} > 0` | `power_brownout` |
 | Pipeline chậm | `avg(last_5m): ingest.latency_ms.95percentile > 5000` | `ingest_latency` |
-| Bản tin bất thường | `anomalies(sum: ingest.messages, 'basic', 2)` | (chỉ thông báo) |
+| Nước tưới không tới gốc | `min(last_5m): irrigation.response_zscore by device_id <= -3` | `irrigation_ineffective` |
+| Đất ẩm lên bất thường | `max(last_5m): irrigation.response_zscore by device_id >= 3` | `soil_response_high` |
+| Dự báo cây sắp thiếu nước (**forecast**) | `min(next_2h): forecast(soil.moisture, 'linear', 1, model='reactive') <= 25` | (cảnh báo sớm) |
+| Dự báo ESP32 cạn bộ nhớ (**forecast**) | `min(next_1d): forecast(device.free_heap, 'linear', 1) <= 20000` | (cảnh báo sớm) |
+| Lượng nước tưới bất thường (**anomaly**) | `anomalies(sum: flow.volume_ml by device_id, 'basic', 3)` | (chỉ thông báo) |
+| Độ trễ ack bất thường (**anomaly**) | `anomalies(avg: command.ack_latency_ms, 'basic', 3)` | (chỉ thông báo) |
+| Bản tin bất thường (**anomaly**) | `anomalies(sum: ingest.messages, 'basic', 2)` | (chỉ thông báo) |
 | Backend / broker không phản hồi | service check `http.can_connect`, `tcp.can_connect` | (chỉ thông báo) |
 
 Mọi monitor gắn `@webhook-agriguard`. Webhook gửi `transition`, `scope` (chứa `device_id`) và `tags` (chứa `incident_type`)
 về `/api/webhooks/datadog`. Backend mở hoặc gộp incident, lưu link monitor. Khi monitor hồi phục, backend chỉ ghi chú vào timeline, không tự đóng incident.
+
+### Dự báo, phát hiện bất thường và AI – ai làm gì
+
+| Năng lực | Ở đâu | Làm gì |
+|---|---|---|
+| **Anomaly detection (thống kê riêng)** | backend `irrigation.py` + MongoDB `irrigation_events` | robust z-score của phản hồi đất trên mỗi lít, học theo từng luống |
+| **Anomaly detection (Datadog)** | `anomalies()` trong 3 monitor + widget | lượng nước tưới, độ trễ ack, lượng bản tin MQTT lệch khỏi dải bình thường |
+| **Forecast (Datadog)** | `forecast()` trong 2 monitor + widget | đất sẽ khô dưới 25% trong 2 giờ (tức tưới tự động đang không chạy), heap ESP32 sẽ cạn |
+| **Prediction (backend)** | `backend/app/prediction.py` | bao lâu nữa đất khô tới ngưỡng tưới, cần bao nhiêu lít/ngày và cho lần tưới tới; hiện trên web và gửi Datadog |
+| **Bits AI (Datadog)** | giao diện Datadog | điều tra nguyên nhân khi monitor báo động (xem dưới) |
+
+Thuật toán: `basic` (không mùa vụ) vì hệ thống demo chỉ có vài ngày dữ liệu; `agile`/`robust` và forecast `seasonal`
+cần ít nhất 2 chu kỳ (ví dụ 2 tuần cho mùa vụ theo tuần) – có thể đổi trong `datadog/definitions.py` khi chạy thật lâu dài.
+
+#### Bật Bits AI (Bits Investigation) cho AgriGuard
+Datadog không cho bật điều tra tự động qua API/Terraform, nên làm một lần trong giao diện:
+1. **Monitors → Manage Monitors**, lọc `tag:app:agriguard`.
+2. Mở từng monitor quan trọng (Bơm chạy khô, Thiết bị mất kết nối, Nước tưới không tới gốc) → **Edit** →
+   mục **Configure notifications & automations** → bật **Investigate with Bits Investigation** → Save.
+   Hoặc trong danh sách *Supported monitors* của Bits AI SRE chọn nhiều monitor → **Auto-Investigate**.
+3. Khi monitor chuyển **Alert**, Bits AI tự đặt giả thuyết và truy vấn metrics, log, trace của AgriGuard rồi kết luận.
+   Có thể bấm **Investigate with Bits Investigation** ở trang trạng thái monitor để chạy tay khi demo.
+4. Phần **Điều tra:** trong message của mỗi monitor (tên metric cần so sánh) cũng là gợi ý cho người và cho Bits AI.
+
+Lưu ý: chỉ trạng thái *Alert* mới kích hoạt điều tra tự động (không phải *Warn*, *No data*); tính năng phụ thuộc gói và
+site Datadog của tài khoản – nếu không thấy mục này thì tài khoản trial chưa được mở Bits AI.
 
 ### SLO
 - **99%** bản tin telemetry được ghi vào MongoDB trong ≤ 5 giây kể từ lúc đo (`ingest.within_slo / ingest.messages`, 7 ngày).
 - **95%** lệnh điều khiển được ESP32 xác nhận trong ≤ 10 giây (`command.acked_in_time / command.sent`, 7 ngày).
 
 ### Dashboard “AgriGuard – IoT Irrigation Operations”
-Dashboard có template variable `device_id` và 6 nhóm:
+Dashboard có template variable `device_id` và 8 nhóm:
 1. **Tổng quan:** số thiết bị online, sự cố mở, p95 ingest, p95 ack, danh sách monitors, SLO.
 2. **Cảm biến.**
 3. **Bơm, nước & phun sương:** trạng thái bơm đặt cạnh lưu lượng, lỗi đang hoạt động, lý do điều khiển.
 4. **Đường ống dữ liệu & APM.**
-5. **Sức khoẻ thiết bị:** RSSI, uptime, reboot, heap.
-6. **Sự cố:** đang mở, MTTD/MTTR theo loại, luồng log cảnh báo.
+5. **Phản hồi đất trên mỗi lít nước:** %/L từng lần tưới so với mức bình thường, z-score có vạch ±3, lít nước mỗi lần tưới, số lần tưới theo kết quả.
+6. **Dự báo & bất thường:** độ ẩm đất kèm đường `forecast()`, phút tới khi đất khô, lít/ngày dự báo, lượng nước với dải `anomalies()`, heap kèm dự báo.
+7. **Sức khoẻ thiết bị:** RSSI, uptime, reboot, heap.
+8. **Sự cố:** đang mở, MTTD/MTTR theo loại, luồng log cảnh báo.

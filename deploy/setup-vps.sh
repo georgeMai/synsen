@@ -124,7 +124,7 @@ cat <<EOF
 Web:                    $(getenv WEB_URL)/
 ADMIN_TOKEN (nút 🔑 trên web, --token của dir_drill.py):  $(getenv ADMIN_TOKEN)
 
-ESP32 – sửa firmware/agriguard_esp32/secrets.h:
+ESP32 – nhập trên trang 192.168.4.1 (Wi-Fi AgriGuard-esp32-01) hoặc điền vào secrets.h:
   #define MQTT_HOST     "${API_DOMAIN}"     // hoặc IP ${PUBLIC_IP}
   #define MQTT_PORT     1883
   #define MQTT_USER     "$(getenv MQTT_USER)"

@@ -32,7 +32,7 @@ def _msg(title: str, investigate: str, resolve: str, webhook: bool = True) -> st
 
 
 def _monitor(name, query, incident_type, priority, message, *, type_="query alert", critical=None,
-             warning=None, no_data_min=None, renotify=None, evaluation_delay=None):
+             warning=None, no_data_min=None, renotify=None, evaluation_delay=None, threshold_windows=None):
     thresholds = {}
     if critical is not None:
         thresholds["critical"] = critical
@@ -50,6 +50,8 @@ def _monitor(name, query, incident_type, priority, message, *, type_="query aler
         options["no_data_timeframe"] = no_data_min
     if evaluation_delay:
         options["evaluation_delay"] = evaluation_delay
+    if threshold_windows:
+        options["threshold_windows"] = threshold_windows
     return {
         "name": f"[AgriGuard] {name}",
         "type": type_,
@@ -160,12 +162,77 @@ MONITORS = [
         critical=5000, warning=3000,
     ),
     _monitor(
+        "Đất không phản hồi khi tưới (bất thường %/L)",
+        # z-score do backend tính từ trung vị + MAD của 20 lần tưới gần nhất lưu trong MongoDB
+        "min(last_5m):min:agriguard.irrigation.response_zscore{*} by {device_id} <= -3",
+        "irrigation_ineffective", 2,
+        _msg("Nước tưới không tới gốc",
+             "So sánh `agriguard.irrigation.response_pct_per_liter` với `agriguard.irrigation.baseline_pct_per_liter`: "
+             "YF-S201 vẫn đếm được nước (`agriguard.irrigation.liters`) nhưng độ ẩm đất không tăng tương ứng. "
+             "Chi tiết từng lần tưới: collection `irrigation_events` trong MongoDB.",
+             "Kiểm tra ống tưới có tuột / rò không, cảm biến đất có bị lệch khỏi vùng rễ không; "
+             "sau đó bấm “Đã xử lý” – hệ thống sẽ tưới thử và so sánh lại với mức bình thường."),
+        critical=-3, warning=-2,
+    ),
+    _monitor(
+        "Đất ẩm lên bất thường so với lượng nước",
+        "max(last_5m):max:agriguard.irrigation.response_zscore{*} by {device_id} >= 3",
+        "soil_response_high", 3,
+        _msg("Đất phản hồi quá mạnh so với lượng nước",
+             "`agriguard.irrigation.response_pct_per_liter` cao bất thường so với baseline.",
+             "Kiểm tra cảm biến đất có bị đọng nước / cắm sát đầu tưới không."),
+        critical=3, warning=2,
+    ),
+    # ---------------- Forecast (Datadog dự báo xu hướng) ----------------
+    _monitor(
+        "Dự báo cây sắp thiếu nước trong 2 giờ (forecast)",
+        # Bình thường bơm tự tưới khi đất < 35% nên dự báo không bao giờ chạm 25%.
+        # Chạm -> tưới tự động đang không hoạt động (bị khoá do sự cố, chế độ OFF, hết nước, bơm hỏng).
+        "min(next_2h):forecast(avg:agriguard.soil.moisture{*} by {device_id}, 'linear', 1, "
+        "interval=300, history='6h', model='reactive') <= 25",
+        "soil_drying_forecast", 2,
+        _msg("Dự báo đất sẽ khô dưới 25% trong 2 giờ tới",
+             "Xem `agriguard.soil.minutes_to_dry`, chế độ bơm (AUTO/MANUAL/OFF) và các sự cố đang khoá bơm.",
+             "Gỡ nguyên nhân khoá tưới hoặc tưới tay trước khi cây bị héo.", webhook=False),
+        critical=25, warning=30,
+    ),
+    _monitor(
+        "Dự báo ESP32 cạn bộ nhớ trong 1 ngày (forecast)",
+        "min(next_1d):forecast(min:agriguard.device.free_heap{*} by {device_id}, 'linear', 1, "
+        "interval=3600, history='1d', model='default') <= 20000",
+        "heap_forecast", 3,
+        _msg("Dự báo bộ nhớ trống của ESP32 giảm dưới 20 KB",
+             "`agriguard.device.free_heap` giảm dần → rò bộ nhớ trong firmware (chuỗi String, JSON).",
+             "Khởi động lại thiết bị theo lịch, kiểm tra bản firmware mới nhất.", webhook=False),
+        critical=20000, warning=40000,
+    ),
+    # ---------------- Anomaly detection (thuật toán của Datadog) ----------------
+    _monitor(
+        "Lượng nước tưới bất thường (anomaly)",
+        "avg(last_1h):anomalies(sum:agriguard.flow.volume_ml{*} by {device_id}.as_count(), 'basic', 3) >= 1",
+        "water_usage_anomaly", 3,
+        _msg("Lượng nước tưới khác hẳn thường lệ",
+             "So với `agriguard.water.predicted_liters_per_day` và `agriguard.control.decision` theo reason: "
+             "trời nóng bất thường, rò nước, hay cảm biến đất sai làm bơm chạy nhiều.",
+             "Kiểm tra đường ống và cảm biến đất.", webhook=False),
+        critical=1, threshold_windows={"trigger_window": "last_15m", "recovery_window": "last_15m"},
+    ),
+    _monitor(
+        "Độ trễ xác nhận lệnh bất thường (anomaly)",
+        "avg(last_1h):anomalies(avg:agriguard.command.ack_latency_ms.avg{*}, 'basic', 3) >= 1",
+        "ack_latency_anomaly", 3,
+        _msg("Độ trễ ack lệnh điều khiển tăng bất thường",
+             "Xem `agriguard.device.rssi`, `mqtt.disconnects` và APM trace của backend.",
+             "Kiểm tra sóng Wi‑Fi tại vị trí đặt ESP32.", webhook=False),
+        critical=1, threshold_windows={"trigger_window": "last_15m", "recovery_window": "last_15m"},
+    ),
+    _monitor(
         "Lượng bản tin cảm biến bất thường",
         "avg(last_15m):anomalies(sum:agriguard.ingest.messages{*}.as_count(), 'basic', 2) >= 1",
         "ingest_anomaly", 3,
         _msg("Số bản tin MQTT nhận được bất thường", "So sánh `agriguard.mqtt.messages_received` theo kind.",
              "Kiểm tra thiết bị gửi trùng/thiếu.", webhook=False),
-        critical=1,
+        critical=1, threshold_windows={"trigger_window": "last_15m", "recovery_window": "last_15m"},
     ),
     {
         "name": "[AgriGuard] Backend API không phản hồi",
@@ -290,6 +357,38 @@ def dashboard(slo_ids: list[str] | None = None) -> dict:
                 _ts("API backend – request & lỗi (APM)",
                     "sum:trace.fastapi.request.hits{service:agriguard-backend}.as_count()",
                     "sum:trace.fastapi.request.errors{service:agriguard-backend}.as_count()", display="bars"),
+            ]),
+            _group("Phản hồi đất trên mỗi lít nước (phát hiện bất thường)", [
+                _ts("Phản hồi đất (%/L) từng lần tưới vs mức bình thường",
+                    f"avg:agriguard.irrigation.response_pct_per_liter{d} by {{device_id}}",
+                    f"avg:agriguard.irrigation.baseline_pct_per_liter{d} by {{device_id}}"),
+                {"definition": {"type": "timeseries", "title": "Độ lệch so với bình thường (robust z-score)",
+                                "show_legend": True, "legend_layout": "auto",
+                                "requests": [{"q": f"avg:agriguard.irrigation.response_zscore{d} by {{device_id}}",
+                                              "display_type": "line"}],
+                                "markers": [{"value": "y = -3", "display_type": "error dashed",
+                                             "label": "nước không tới gốc"},
+                                            {"value": "y = 3", "display_type": "warning dashed",
+                                             "label": "đất ẩm lên quá nhanh"}],
+                                "yaxis": {"min": "-8", "max": "8"}}},
+                _ts("Nước mỗi lần tưới (L)", f"avg:agriguard.irrigation.liters{d} by {{device_id}}", display="bars"),
+                _ts("Lần tưới theo kết quả đánh giá", "sum:agriguard.irrigation.events{*} by {status}.as_count()",
+                    display="bars"),
+            ]),
+            _group("Dự báo & phát hiện bất thường (Forecast · Prediction · Anomaly)", [
+                _ts("Độ ẩm đất + dự báo (forecast linear)",
+                    f"avg:agriguard.soil.moisture{d} by {{device_id}}",
+                    f"forecast(avg:agriguard.soil.moisture{d} by {{device_id}}, 'linear', 1)"),
+                _qv("Đất khô tới ngưỡng tưới sau (phút)", f"min:agriguard.soil.minutes_to_dry{d}", unit="phút"),
+                _qv("Dự báo nước cần mỗi ngày (L)", f"sum:agriguard.water.predicted_liters_per_day{d}", precision=1,
+                    unit="L"),
+                _qv("Nước cho lần tưới kế tiếp (L)", f"avg:agriguard.irrigation.predicted_liters_next{d}", precision=2,
+                    unit="L"),
+                _ts("Nước tưới – dải bình thường (anomaly basic)",
+                    f"anomalies(sum:agriguard.flow.volume_ml{d}.as_count(), 'basic', 3)", display="bars"),
+                _ts("Bộ nhớ trống ESP32 + dự báo",
+                    f"min:agriguard.device.free_heap{d} by {{device_id}}",
+                    f"forecast(min:agriguard.device.free_heap{d} by {{device_id}}, 'linear', 1)"),
             ]),
             _group("Sức khoẻ thiết bị", [
                 _ts("Wi‑Fi RSSI (dBm)", f"avg:agriguard.device.rssi{d} by {{device_id}}"),

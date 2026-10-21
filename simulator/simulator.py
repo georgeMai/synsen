@@ -5,6 +5,7 @@ Mô phỏng N bo ESP32 giống hệt hợp đồng MQTT của firmware thật:
   subscribe agri/{site}/{device}/cmd
 Có mô hình vật lý đơn giản (ngày/đêm, bay hơi đất, tưới, phun sương) và có thể tiêm lỗi
 qua topic agri/{site}/{device}/sim/fault, ví dụ: {"fault": "dry_run", "on": true}
+(hose_off = ống tưới tuột khỏi gốc: bơm chạy, lưu lượng bình thường nhưng đất không ẩm lên)
 
 Biến môi trường: MQTT_HOST, MQTT_PORT, MQTT_USER, MQTT_PASSWORD, AGRI_SITE,
 SIM_DEVICES (mặc định 2), SIM_DAY_MINUTES (độ dài 1 "ngày" mô phỏng, mặc định 30),
@@ -40,11 +41,12 @@ DAY_SECONDS = float(os.getenv("SIM_DAY_MINUTES", "30")) * 60
 EVAP = float(os.getenv("SIM_EVAP_FACTOR", "1.0"))
 
 TELEMETRY_S, STATUS_S = 5, 15
+INFIL_TAU_S = float(os.getenv("SIM_INFILTRATION_TAU_S", "12"))
 SOIL_DRY_RAW, SOIL_WET_RAW = 3500, 1400
 PUMP_MAX_S, MIST_MAX_S = 600, 900
 PUMP_GRACE_S, PUMP_DRYRUN_S, MIN_FLOW = 8, 60, 0.3
 COMM_LOSS_OFF_S = 120
-FAULTS = {"dry_run", "leak", "dht_fail", "soil_disconnect", "soil_stuck", "offline", "mist_empty",
+FAULTS = {"dry_run", "leak", "dht_fail", "soil_disconnect", "soil_stuck", "offline", "mist_empty", "hose_off",
           "no_ack", "slow_network"}
 
 
@@ -63,6 +65,10 @@ class SimDevice:
         self.temp = 27.0
         self.hum = 70.0
         self.soil = rnd.uniform(38, 55)
+        # Nước tưới không làm đất ẩm ngay: đi vào "lượng chờ thấm" rồi thấm dần (hằng số thời gian INFIL_TAU_S).
+        # Hệ số phản hồi riêng của luống: % độ ẩm trên (L/phút · giây) ≈ 60·k %/L (k = 0.2 -> ~12 %/L).
+        self.soil_k = rnd.uniform(0.18, 0.23)
+        self.pending = 0.0
         self.flow = 0.0
         self.liters = 0.0
         self.pump = {"on": False, "since": 0.0, "auto_off": 0.0, "lockout": False, "reason": ""}
@@ -192,6 +198,10 @@ class SimDevice:
                     self.connect()
                 log.info("%s all faults cleared", self.device_id)
                 return
+            if fault == "dry_soil":     # chỉ dùng cho diễn tập: đưa độ ẩm đất giả lập về 45%
+                self.soil, self.pending = 45.0, 0.0
+                log.info("%s soil moisture reset to 45%%", self.device_id)
+                return
             if fault == "brownout":
                 self.boot = time.time()
                 self.reset_reason = "brownout"
@@ -247,7 +257,11 @@ class SimDevice:
                 self.flow = 0.0
             self.liters += self.flow * dt / 60
             evaporation = (0.012 + 0.004 * max(0.0, self.temp - 25)) * EVAP * dt
-            self.soil = min(98.0, max(5.0, self.soil - evaporation + self.flow * 0.45 * dt))
+            if self.pump["on"] and "hose_off" not in self.faults:   # hose_off: nước chảy ra ngoài, không tới gốc
+                self.pending += self.flow * self.soil_k * dt
+            infiltrate = self.pending * (1 - math.exp(-dt / INFIL_TAU_S))
+            self.pending -= infiltrate
+            self.soil = min(98.0, max(5.0, self.soil - evaporation + infiltrate))
 
             # an toàn cục bộ giống firmware
             for name, act, limit in (("pump", self.pump, PUMP_MAX_S), ("mist", self.mist, MIST_MAX_S)):
