@@ -30,10 +30,13 @@
 
 // ---------- Cảm biến ----------
 #define DHT_TYPE DHT11
-#define SOIL_RAW_DRY  3500   // đọc khi cảm biến để ngoài không khí -> hiệu chuẩn lại
-#define SOIL_RAW_WET  1400   // đọc khi cắm trong cốc nước       -> hiệu chuẩn lại
-#define SOIL_RAW_MIN_VALID  50     // < giá trị này: nghi tuột dây / chạm GND
-#define SOIL_RAW_MAX_VALID  4050   // > giá trị này: nghi hở mạch
+// Cảm biến đất kiểu ĐIỆN TRỞ (2 que kim loại + mạch LM393), cấp 3V3 – đã hiệu chuẩn 22/10:
+//   que để khô / ngoài không khí = 4095, nhúng nước = 1763
+// (Cảm biến điện dung v1.2: khoảng 3500 khô / 1400 ướt – đo lại nếu đổi loại)
+#define SOIL_RAW_DRY  4095   // que khô -> 0%
+#define SOIL_RAW_WET  1763   // que trong nước -> 100%
+#define SOIL_RAW_MIN_VALID  50     // < giá trị này: nghi chạm GND / mất nguồn cảm biến
+#define SOIL_RAW_MAX_VALID  4096   // cảm biến điện trở: 4095 = đất rất khô, KHÔNG coi là lỗi
 #define FLOW_PULSES_PER_LITER 450.0f  // ~7.5 Hz mỗi L/phút; hiệu chuẩn bằng chai 1 lít
 
 // ---------- Chu kỳ ----------
