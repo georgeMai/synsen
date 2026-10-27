@@ -222,3 +222,5 @@ th { color: var(--text-2); font-weight: 600; background: var(--surface-2); }
   .kpi .value { font-size: 24px; }
   .charts { grid-template-columns: 1fr; }
 }
+
+.actuator .last.why { margin-top: 4px; color: var(--text); }

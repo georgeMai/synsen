@@ -156,13 +156,50 @@
       <div class="state ${lock ? "lock" : on ? "on" : ""}">${stateText}</div>
       <div class="row">
         <select data-dur="${act}" aria-label="Thời gian chạy" style="width:auto">
-          <option value="60">1 phút</option><option value="120" selected>2 phút</option><option value="300">5 phút</option><option value="600">10 phút</option>
+          ${durOptions(act)}
         </select>
         <button class="primary" data-cmd="on" data-act="${act}" ${dis || (lock ? "disabled" : "")}>Bật</button>
         <button data-cmd="off" data-act="${act}" ${dis}>Tắt</button>
         ${lock ? `<button class="danger" data-cmd="clear_lockout" data-act="${act}" ${dis}>Gỡ khoá</button>` : ""}
       </div>
-      <div class="last">${lastCommand(act)}</div>`;
+      <div class="last">${lastCommand(act)}</div>
+      ${a.mode === "AUTO" || (d.control || {})[act]?.reason === "incident_block" ? `<div class="last why">${controlWhy(d, act)}</div>` : ""}`;
+  }
+
+  // Thời lượng bật tay: bơm có thêm mức giây (chậu demo); không vượt "chạy tối đa mỗi lần"
+  function durOptions(act) {
+    const opts = act === "pump" ? [3, 5, 10, 30, 60, 120, 300, 600] : [60, 120, 300, 600];
+    const max = act === "pump" ? S.settings?.pump?.max_seconds : null;
+    const list = max ? [...new Set([...opts.filter((s) => s < max), max])] : opts;
+    const picked = (S.dur || {})[act];
+    const def = list.includes(picked) ? picked : act === "pump" ? (max && max < 120 ? max : 120) : 120;
+    const lab = (s) => (s < 60 || s % 60 ? `${s} giây` : `${s / 60} phút`);
+    return list.map((s) => `<option value="${s}" ${s === def ? "selected" : ""}>${lab(s)}</option>`).join("");
+  }
+
+  // Vì sao bộ điều khiển tự động đang bật / chưa bật (backend ghi vào devices.control)
+  const WHY = {
+    offline: "thiết bị mất kết nối", stale_data: "dữ liệu cũ quá 30 giây", verifying: "đang kiểm chứng sự cố",
+    mode_manual: "đang ở chế độ Thủ công", mode_off: "đang ở chế độ Tắt hẳn", pending_command: "đang chờ thiết bị xác nhận lệnh trước",
+    incident_block: "bị khoá do sự cố đang mở", device_lockout: "thiết bị đang khoá an toàn – bấm Gỡ khoá",
+    dht_unavailable: "cảm biến DHT11 chưa có số đo", soil_unavailable: "cảm biến đất chưa có số đo hợp lệ",
+    running: "đang chạy, chờ điều kiện tắt", too_humid: "độ ẩm không khí đã ≥ ngưỡng tối đa",
+    min_off: "đang trong thời gian nghỉ tối thiểu", no_data: "chưa có dữ liệu",
+    decided_on: "vừa ra lệnh BẬT", decided_off: "vừa ra lệnh TẮT",
+  };
+  function controlWhy(d, act) {
+    const c = (d.control || {})[act];
+    if (!c) return "Tự động: chưa có đánh giá";
+    const s = S.settings, r = d.latest || {};
+    let text = WHY[c.reason] || c.reason;
+    if (c.reason === "incident_block" && c.incidents?.length) text += ` (${c.incidents.join(", ")})`;
+    if (c.decision) text += ` – ${c.decision}`;
+    if (c.reason === "conditions_not_met" && s) {
+      text = act === "mist"
+        ? `chưa đạt điều kiện: cần nhiệt độ > ${s.mist.hot_temp_c}°C hoặc độ ẩm KK < ${s.mist.air_dry_pct}%`
+        : `chưa đạt điều kiện: cần đất < ${s.pump.soil_dry_pct}%`;
+    }
+    return `Tự động: ${text}`;
   }
 
   // ------------------------------------------------------------------ render: charts
@@ -255,7 +292,7 @@
 
   const SETTING_FIELDS = {
     pump: ["Bơm tưới", [["soil_dry_pct", "Đất khô – bắt đầu tưới (%)"], ["soil_target_pct", "Đất đủ ẩm – dừng tưới (%)"], ["hot_temp_c", "Trời nóng – tưới sớm (°C)"],
-      ["max_minutes", "Chạy tối đa mỗi lần (phút)"], ["min_off_minutes", "Nghỉ tối thiểu (phút)"], ["min_flow_lpm", "Lưu lượng tối thiểu (L/phút)"],
+      ["max_seconds", "Chạy tối đa mỗi lần (giây)"], ["min_off_minutes", "Nghỉ tối thiểu (phút)"], ["min_flow_lpm", "Lưu lượng tối thiểu (L/phút)"],
       ["dry_run_seconds", "Báo chạy khô sau (giây)"], ["leak_seconds", "Báo rò/kẹt relay sau (giây)"]]],
     mist: ["Phun sương", [["hot_temp_c", "Trời nóng – bật phun (°C)"], ["temp_hysteresis_c", "Độ trễ nhiệt (°C)"], ["air_dry_pct", "Không khí khô – bật phun (%)"],
       ["air_target_pct", "Độ ẩm mục tiêu (%)"], ["air_max_pct", "Độ ẩm tối đa – không phun (%)"], ["max_minutes", "Chạy tối đa mỗi lần (phút)"],
@@ -322,6 +359,12 @@
     }
   }
 
+  // Sau khi gửi lệnh: làm mới dày trong vài giây đầu để thấy ack + trạng thái mới ngay
+  function afterCommand() {
+    [400, 1200, 2500, 5000].forEach((ms) => setTimeout(refresh, ms));
+    [1500, 6000].forEach((ms) => setTimeout(loadCharts, ms));
+  }
+
   async function refreshHealth() {
     try {
       const h = await api("health");
@@ -331,6 +374,12 @@
   }
 
   // ------------------------------------------------------------------ events
+  // Giữ lựa chọn thời lượng khi trang tự làm mới
+  document.addEventListener("change", (ev) => {
+    const sel = ev.target.closest("select[data-dur]");
+    if (sel) { S.dur = S.dur || {}; S.dur[sel.dataset.dur] = +sel.value; }
+  });
+
   document.addEventListener("click", async (ev) => {
     const b = ev.target.closest("button");
     if (!b) return;
@@ -354,7 +403,7 @@
         b.disabled = true;
         const c = await post(`devices/${encodeURIComponent(d._id)}/actuators/${act}/command`, { action, duration_s: duration });
         toast(`Đã gửi lệnh ${ACTIONS[action]} (${c._id}). ${action !== "clear_lockout" ? "Chế độ chuyển sang Thủ công." : ""}`);
-        setTimeout(refresh, 800);
+        afterCommand();
       } else if (b.dataset.ack) {
         S.busy.add(b.dataset.ack); renderIncidents();
         await post(`incidents/${b.dataset.ack}/acknowledge`, { note: "", actor: store.get("agri.actor") || "operator" });
@@ -402,7 +451,7 @@
     await refresh(); refreshHealth(); loadCharts(); renderTab();
     setInterval(refresh, 3000);
     setInterval(refreshHealth, 10000);
-    setInterval(loadCharts, 10000);
+    setInterval(loadCharts, 5000);
     setInterval(() => { if (S.tab === "history") renderHistory().catch(() => {}); }, 15000);
     setInterval(async () => { try { S.settings = await api("settings"); } catch { /* */ } }, 30000);
   }
