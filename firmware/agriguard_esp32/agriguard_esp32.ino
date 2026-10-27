@@ -86,6 +86,8 @@ struct NetConfig {           // cấu hình MQTT, lưu trong NVS (Preferences)
 
 void relayWrite(uint8_t pin, bool on);
 void IRAM_ATTR onFlowPulse();
+void flowAttach(bool on);
+void flowGuardTick(uint32_t now);
 uint64_t nowEpochMs();
 const char *resetReasonStr();
 bool publishJson(const char *topic, JsonDocument &doc, bool retained);
@@ -109,6 +111,8 @@ void buttonTick(uint32_t now);
 void ensureMqtt();
 void tftLine(int y, uint16_t color, const char *fmt, ...);
 void drawTft();
+void tftInit();
+void tftCheck(bool afterSwitch);
 
 // ============================================================
 //  Đối tượng toàn cục
@@ -133,7 +137,13 @@ Actuator mist = {"mist", PIN_MIST_RELAY, false, 0, 0, MIST_MAX_SECONDS, false, "
 // ============================================================
 //  Trạng thái đo
 // ============================================================
-volatile uint32_t flowPulses = 0;
+volatile uint32_t flowPulses = 0;     // xung hợp lệ (đã lọc nhiễu)
+volatile uint32_t flowEdges  = 0;     // mọi cạnh xuống, kể cả nhiễu
+volatile uint32_t flowLastUs = 0;
+bool     flowAttached = false;
+bool     flowNoise    = false;        // đang tạm ngắt ngắt vì nhiễu
+uint32_t flowNoiseUntilMs = 0;
+uint32_t flowNoiseCount   = 0;
 
 float    airTemp = NAN, airHum = NAN;
 bool     dhtOk = false;
@@ -158,23 +168,66 @@ uint32_t wifiDownSinceMs = 0;   // 0 = Wi-Fi đang kết nối
 bool     portalByUser = false;  // mở bằng nút BOOT -> không tự đóng khi có mạng
 bool     portalWasActive = false;
 bool     mqttConfigChanged = false;
+bool     telemetryNow = false;          // bơm/phun vừa đổi trạng thái
+// Màn hình TFT hay bị "đơ trắng" do nhiễu khi relay đóng/ngắt (ESP32 vẫn chạy bình thường)
+bool     tftReadable = false;           // đọc được thanh ghi trạng thái qua MISO?
+uint8_t  tftModeOk = 0;                 // giá trị RDMODE lúc màn hình chạy tốt
+uint32_t tftCheckAtMs = 0;              // hẹn kiểm tra màn hình sau khi relay đổi trạng thái
+uint32_t tftReinits = 0;
 
 // ============================================================
 //  Relay
 // ============================================================
+// Mỗi relay có cấu hình mức kích riêng (config.h): PUMP_RELAY_* và MIST_RELAY_*
 void relayWrite(uint8_t pin, bool on) {
+  bool activeLow = (pin == PIN_PUMP_RELAY) ? PUMP_RELAY_ACTIVE_LOW : MIST_RELAY_ACTIVE_LOW;
+  bool offHighZ  = (pin == PIN_PUMP_RELAY) ? PUMP_RELAY_OFF_HIGH_Z : MIST_RELAY_OFF_HIGH_Z;
   if (on) {
     pinMode(pin, OUTPUT);
-    digitalWrite(pin, RELAY_ACTIVE_LOW ? LOW : HIGH);
-  } else if (RELAY_OFF_HIGH_Z && RELAY_ACTIVE_LOW) {
+    digitalWrite(pin, activeLow ? LOW : HIGH);
+  } else if (offHighZ && activeLow) {
     pinMode(pin, INPUT);                 // thả nổi -> điện trở kéo lên trên module nhả relay
   } else {
     pinMode(pin, OUTPUT);
-    digitalWrite(pin, RELAY_ACTIVE_LOW ? HIGH : LOW);
+    digitalWrite(pin, activeLow ? HIGH : LOW);
   }
 }
 
-void IRAM_ATTR onFlowPulse() { flowPulses++; }
+// Lọc nhiễu: YF-S201 tối đa ~30 L/phút = 225 Hz (chu kỳ 4.4 ms) -> bỏ các cạnh sát nhau < FLOW_MIN_PULSE_US
+void IRAM_ATTR onFlowPulse() {
+  flowEdges++;
+  uint32_t t = micros();
+  if (t - flowLastUs >= FLOW_MIN_PULSE_US) { flowPulses++; flowLastUs = t; }
+}
+
+void flowAttach(bool on) {
+  if (on && !flowAttached)  attachInterrupt(digitalPinToInterrupt(PIN_FLOW), onFlowPulse, FALLING);
+  if (!on && flowAttached)  detachInterrupt(digitalPinToInterrupt(PIN_FLOW));
+  flowAttached = on;
+}
+
+// Chống "bão ngắt": chân GPIO35 thả nổi (rút cảm biến, thiếu điện trở kéo) + nhiễu 108 kHz
+// của máy phun sương -> hàng chục nghìn ngắt/giây -> watchdog reset ESP32.
+// Gọi mỗi 50 ms: quá FLOW_STORM_EDGES cạnh -> tạm ngắt ngắt, thử lại sau FLOW_NOISE_PAUSE_MS.
+void flowGuardTick(uint32_t now) {
+  if (!flowAttached) {
+    if ((int32_t)(now - flowNoiseUntilMs) >= 0) { flowEdges = 0; flowAttach(true); }
+    return;
+  }
+  noInterrupts();
+  uint32_t e = flowEdges; flowEdges = 0;
+  interrupts();
+  if (e > FLOW_STORM_EDGES) {
+    flowAttach(false);
+    flowNoise = true;
+    flowNoiseCount++;
+    flowNoiseUntilMs = now + FLOW_NOISE_PAUSE_MS;
+    noInterrupts(); flowPulses = 0; interrupts();   // bỏ số xung nhiễu
+    publishEvent("flow_noise", "flow", "interrupt_storm");
+  } else if (flowNoise && e == 0) {
+    flowNoise = false;
+  }
+}
 
 // ============================================================
 //  Thời gian
@@ -250,6 +303,7 @@ void publishStatus(bool online) {
   doc["fw_version"] = FW_VERSION;
   doc["uptime_s"] = millis() / 1000;
   doc["free_heap"] = ESP.getFreeHeap();
+  doc["tft_reinits"] = tftReinits;
   doc["rssi_dbm"] = WiFi.RSSI();
   doc["wifi_ssid"] = WiFi.SSID();          // thấy ngay thiết bị đang ở mạng nào sau khi đổi chỗ
   doc["ip"] = WiFi.localIP().toString();
@@ -276,6 +330,8 @@ void publishTelemetry() {
   doc["mist_lockout"] = mist.lockout;
   doc["flow_lpm"] = flowLpm;
   doc["flow_liters_total"] = flowLitersTotal;
+  doc["flow_noise"] = flowNoise;
+  doc["flow_noise_count"] = flowNoiseCount;
   doc["rssi_dbm"] = WiFi.RSSI();
   publishJson(T_TELEMETRY, doc, false);
 }
@@ -293,6 +349,11 @@ void setActuator(Actuator &a, bool on, uint32_t durationS, const char *why) {
     if (&a == &pump) dryRunSeconds = 0;
   } else {
     a.autoOffAtMs = 0;
+  }
+  if (a.on != on) {
+    telemetryNow = true;                 // báo trạng thái mới ngay, không chờ chu kỳ telemetry
+    tftCheckAtMs = millis() + 400;       // nhiễu relay có thể làm treo TFT -> kiểm tra lại
+    if (tftCheckAtMs == 0) tftCheckAtMs = 1;
   }
   a.on = on;
   Serial.printf("[ACT] %s -> %s (%s)\n", a.name, on ? "ON" : "OFF", why);
@@ -559,6 +620,26 @@ void tftLine(int y, uint16_t color, const char *fmt, ...) {
   tft.printf("%-19s", buf);                // đệm khoảng trắng để xoá chữ cũ, không nhấp nháy
 }
 
+void tftInit() {
+  tft.begin();
+  tft.setRotation(0);                      // 240x320 đứng
+  tft.fillScreen(ILI9341_BLACK);
+  tft.setTextSize(2);
+}
+
+// Tự phục hồi màn hình: nếu đọc được thanh ghi trạng thái thì chỉ khởi động lại khi thật sự hỏng,
+// nếu không (module không nối MISO) thì khởi động lại sau mỗi lần relay đổi trạng thái.
+void tftCheck(bool afterSwitch) {
+  bool broken;
+  if (tftReadable) broken = tft.readcommand8(ILI9341_RDMODE) != tftModeOk;
+  else             broken = afterSwitch;
+  if (!broken) return;
+  tftInit();
+  drawTft();
+  tftReinits++;
+  Serial.printf("[TFT] khởi động lại màn hình (lần %lu)\n", (unsigned long)tftReinits);
+}
+
 void drawTft() {
   tft.setTextSize(2);
   tftLine(8,  ILI9341_GREEN, "AgriGuard %s", DEVICE_ID);
@@ -602,15 +683,15 @@ void setup() {
   relayWrite(PIN_MIST_RELAY, false);
 
   pinMode(PIN_FLOW, INPUT);                // GPIO35 không có pull-up nội, dùng cầu phân áp ngoài
-  attachInterrupt(digitalPinToInterrupt(PIN_FLOW), onFlowPulse, FALLING);
+  flowAttach(true);
   analogSetPinAttenuation(PIN_SOIL, ADC_11db);
   pinMode(PIN_CONFIG_BUTTON, INPUT_PULLUP);
 
   dht.begin();
-  tft.begin();
-  tft.setRotation(0);                      // 240x320 đứng
-  tft.fillScreen(ILI9341_BLACK);
-  tft.setTextSize(2);
+  tftInit();
+  tftModeOk = tft.readcommand8(ILI9341_RDMODE);
+  tftReadable = tftModeOk != 0x00 && tftModeOk != 0xFF;
+  Serial.printf("[TFT] RDMODE=0x%02X (%s)\n", tftModeOk, tftReadable ? "tự kiểm tra được" : "không đọc được MISO");
   tftLine(8, ILI9341_GREEN, "AgriGuard %s", DEVICE_ID);
   tftLine(40, ILI9341_WHITE, "Dang ket noi WiFi");
 
@@ -666,9 +747,16 @@ void loop() {
   mqtt.loop();
   if (mqtt.connected()) lastMqttOkMs = now;
 
+  static uint32_t tFlowGuard = 0;
+  if (now - tFlowGuard >= 50)                  { tFlowGuard = now; flowGuardTick(now); }
   if (now - tSafety    >= 1000)                { tSafety = now;    safetyTick(); }
   if (now - tDht       >= DHT_INTERVAL_MS)     { tDht = now;       readDht(); }
-  if (now - tTelemetry >= TELEMETRY_INTERVAL_MS){ tTelemetry = now; readSoil(); publishTelemetry(); }
+  if (telemetryNow || now - tTelemetry >= TELEMETRY_INTERVAL_MS) {
+    telemetryNow = false; tTelemetry = now; readSoil(); publishTelemetry();
+  }
   if (now - tStatus    >= STATUS_INTERVAL_MS)  { tStatus = now;    publishStatus(true); }
+  if (tftCheckAtMs && (int32_t)(now - tftCheckAtMs) >= 0) { tftCheckAtMs = 0; tftCheck(true); }
+  static uint32_t tTftCheck = 0;
+  if (tftReadable && now - tTftCheck >= 5000)   { tTftCheck = now;  tftCheck(false); }
   if (now - tTft       >= TFT_INTERVAL_MS)     { tTft = now;       drawTft(); }
 }

@@ -146,9 +146,14 @@ class IncidentService:
              "$inc": {"verification_failures": 1},
              "$push": {"timeline": _entry("system", "verification_failed", reason)}},
         )
-        inc = await db.incidents.find_one({"_id": incident_id}, {"type": 1, "device_id": 1})
-        metrics.increment("incident.verification_failed", tags={"type": (inc or {}).get("type")})
-        log.warning("Incident verification failed", extra={"incident_id": incident_id, "reason": reason})
+        inc = await db.incidents.find_one({"_id": incident_id}, {"type": 1, "device_id": 1, "verification_failures": 1})
+        inc = inc or {}
+        metrics.increment("incident.verification_failed", tags={"type": inc.get("type")})
+        # incident_event: trường cố định để log monitor "đóng sự cố khi chưa sửa" đếm chính xác
+        log.warning("Incident verification failed", extra={
+            "incident_event": "verification_failed", "incident_id": incident_id, "device_id": inc.get("device_id"),
+            "incident_type": inc.get("type"), "verification_failures": inc.get("verification_failures"),
+            "reason": reason})
 
     async def on_datadog_webhook(self, payload: dict) -> dict:
         """Payload do webhook Datadog gửi (định nghĩa trong datadog/bootstrap.py)."""

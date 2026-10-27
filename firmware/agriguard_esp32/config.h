@@ -3,7 +3,7 @@
 //  AgriGuard ESP32 – cấu hình phần cứng & ngưỡng an toàn cục bộ
 // ============================================================
 
-#define FW_VERSION "0.5.0"
+#define FW_VERSION "0.5.2"
 #define SITE_ID    "farm-a"
 #define DEVICE_ID  "esp32-01"
 #define ZONE_ID    "bed-1"
@@ -21,12 +21,21 @@
 #define TFT_DC   27
 #define TFT_RST  14
 
-// ---------- Relay ----------
-// Đa số module relay 5V 1 kênh (NO/COM/NC/IN/VCC/GND) kích mức THẤP.
-#define RELAY_ACTIVE_LOW  true
-// Module cấp VCC=5V nhưng IN chỉ nhận 3.3V từ ESP32 đôi khi KHÔNG nhả (relay luôn đóng).
-// true = khi TẮT thì thả nổi chân (INPUT), điện trở kéo lên trên module sẽ nhả relay.
-#define RELAY_OFF_HIGH_Z  true
+// ---------- Relay (cấu hình RIÊNG cho từng relay) ----------
+// *_ACTIVE_LOW : true  = module kích mức THẤP (jumper L)
+//                false = module kích mức CAO  (jumper H)  <- khuyên dùng với ESP32 3.3V
+// *_OFF_HIGH_Z : chỉ có tác dụng khi ACTIVE_LOW = true. true = khi TẮT thì thả nổi chân
+//                (INPUT) để điện trở kéo lên trên module nhả relay. Với jumper H đặt false.
+// Cách thử: nạp xong, bật/tắt trên web; nếu relay làm NGƯỢC (web tắt mà relay đóng)
+//           -> đổi true/false của *_ACTIVE_LOW cho relay đó.
+
+// Relay BƠM – GPIO26
+#define PUMP_RELAY_ACTIVE_LOW  false   // jumper H
+#define PUMP_RELAY_OFF_HIGH_Z  false
+
+// Relay PHUN SƯƠNG – GPIO25
+#define MIST_RELAY_ACTIVE_LOW  false   // jumper H
+#define MIST_RELAY_OFF_HIGH_Z  false
 
 // ---------- Cảm biến ----------
 #define DHT_TYPE DHT11
@@ -38,6 +47,9 @@
 #define SOIL_RAW_MIN_VALID  50     // < giá trị này: nghi chạm GND / mất nguồn cảm biến
 #define SOIL_RAW_MAX_VALID  4096   // cảm biến điện trở: 4095 = đất rất khô, KHÔNG coi là lỗi
 #define FLOW_PULSES_PER_LITER 450.0f  // ~7.5 Hz mỗi L/phút; hiệu chuẩn bằng chai 1 lít
+#define FLOW_MIN_PULSE_US   2000      // bỏ các cạnh cách nhau < 2 ms (nhiễu), YF-S201 tối đa ~225 Hz
+#define FLOW_STORM_EDGES    100       // > 100 cạnh / 50 ms (= 2 kHz) -> chắc chắn là nhiễu
+#define FLOW_NOISE_PAUSE_MS 10000     // tạm ngắt ngắt 10 s rồi thử lại
 
 // ---------- Chu kỳ ----------
 #define TELEMETRY_INTERVAL_MS 5000

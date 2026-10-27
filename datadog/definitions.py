@@ -234,6 +234,28 @@ MONITORS = [
              "Kiểm tra thiết bị gửi trùng/thiếu.", webhook=False),
         critical=1, threshold_windows={"trigger_window": "last_15m", "recovery_window": "last_15m"},
     ),
+    # Log monitor: dùng Datadog Logs (không phải metric) để bắt hành vi của NGƯỜI vận hành
+    {
+        "name": "[AgriGuard] Liên tục báo đã sửa khi lỗi chưa được khắc phục (log)",
+        "type": "log alert",
+        "query": 'logs("service:agriguard-backend \\"Incident verification failed\\"")'
+                 '.index("*").rollup("count").last("10m") > 3',
+        "message": (
+            "{{#is_alert}}⚠️ **{{value}} lần kiểm chứng thất bại trong 10 phút** – có người đang bấm "
+            "\"đã khắc phục\" nhưng dữ liệu thực tế cho thấy lỗi vẫn còn.\n\n"
+            "**Điều tra:** mở Logs, tìm `service:agriguard-backend \"Incident verification failed\"`, xem các trường "
+            "incident_id, device_id và reason (bằng chứng hệ thống đo được). Mở dòng log → tab Trace để thấy "
+            "request \"resolve\".\n\n"
+            "**Khắc phục:** kiểm tra thiết bị tại hiện trường (ống tưới, nguồn nước, cảm biến) trước khi xác nhận lại; "
+            "AgriGuard sẽ không đóng sự cố cho tới khi có bằng chứng.{{/is_alert}}\n"
+            "{{#is_recovery}}✅ Không còn lần kiểm chứng thất bại liên tiếp.{{/is_recovery}}"
+        ),
+        "priority": 3,
+        "tags": [APP_TAG, "incident_type:verification_abuse", "team:agriguard", "signal:logs"],
+        "options": {"thresholds": {"critical": 3, "warning": 2}, "enable_logs_sample": True,
+                    "notify_no_data": False, "include_tags": True, "require_full_window": False,
+                    "groupby_simple_monitor": False},
+    },
     {
         "name": "[AgriGuard] Backend API không phản hồi",
         "type": "service check",
@@ -401,6 +423,8 @@ def dashboard(slo_ids: list[str] | None = None) -> dict:
                 _top("Sự cố đang mở theo loại", "top(max:agriguard.incident.open{*} by {type}, 10, 'last', 'desc')"),
                 _top("MTTR trung bình theo loại (giây)",
                      "top(avg:agriguard.incident.mttr_seconds.avg{*} by {type}, 10, 'mean', 'desc')"),
+                _ts("Kiểm chứng bị từ chối (báo đã sửa khi chưa sửa)",
+                    "sum:agriguard.incident.verification_failed{*} by {type}.as_count()", display="bars"),
                 _top("MTTD trung bình theo loại (giây)",
                      "top(avg:agriguard.incident.mttd_seconds.avg{*} by {type}, 10, 'mean', 'desc')"),
                 {"definition": {"type": "log_stream", "title": "Log cảnh báo & lỗi của backend",

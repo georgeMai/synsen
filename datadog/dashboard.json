@@ -643,6 +643,20 @@
           },
           {
             "definition": {
+              "type": "timeseries",
+              "title": "Kiểm chứng bị từ chối (báo đã sửa khi chưa sửa)",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "q": "sum:agriguard.incident.verification_failed{*} by {type}.as_count()",
+                  "display_type": "bars"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
               "type": "toplist",
               "title": "MTTD trung bình theo loại (giây)",
               "requests": [
