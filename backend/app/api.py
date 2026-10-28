@@ -57,7 +57,7 @@ class PumpSettings(BaseModel):
     soil_dry_pct: float = Field(ge=5, le=90)
     soil_target_pct: float = Field(ge=10, le=100)
     hot_temp_c: float = Field(ge=15, le=50)
-    max_minutes: float = Field(ge=1, le=60)
+    max_seconds: int = Field(ge=1, le=3600)
     min_off_minutes: float = Field(ge=0, le=240)
     min_flow_lpm: float = Field(ge=0.05, le=10)
     dry_run_seconds: int = Field(ge=15, le=600)
@@ -93,7 +93,7 @@ class IrrigationSettings(BaseModel):
     baseline_events: Optional[int] = Field(None, ge=3, le=200)
     min_baseline_events: Optional[int] = Field(None, ge=2, le=100)
     zscore_threshold: Optional[float] = Field(None, ge=1, le=10)
-    test_seconds: Optional[int] = Field(None, ge=5, le=300)
+    test_seconds: Optional[int] = Field(None, ge=2, le=300)   # chậu demo nhỏ: 3–4 giây
 
 
 class SettingsIn(BaseModel):
@@ -251,7 +251,12 @@ async def send_command(device_id: str, actuator: Literal["pump", "mist"], body: 
     # Bật/tắt bằng tay -> chuyển sang MANUAL để bộ điều khiển tự động không ghi đè
     if body.action in ("on", "off") and (device.get("actuators", {}).get(actuator, {}).get("mode") == "AUTO"):
         await db.devices.update_one({"_id": device_id}, {"$set": {f"actuators.{actuator}.mode": "MANUAL"}})
-    cmd = await commands.send(device_id, actuator, body.action, duration_s=body.duration_s,
+    duration = body.duration_s
+    if actuator == "pump" and body.action == "on":
+        # Bật tay cũng tuân theo "chạy tối đa mỗi lần" (vd. chậu demo 3 giây)
+        limit = int((await db.get_settings())["pump"]["max_seconds"])
+        duration = min(duration, limit) if duration else limit
+    cmd = await commands.send(device_id, actuator, body.action, duration_s=duration,
                               reason="manual", actor=actor, site=device.get("site"))
     await audit("command", actor, device_id=device_id, actuator=actuator, action=body.action, command_id=cmd["_id"])
     return cmd
