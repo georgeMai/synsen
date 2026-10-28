@@ -41,6 +41,8 @@ INCIDENT_TYPES: dict[str, IncidentType] = {
 GENERIC = IncidentType("warning", "Sự cố khác")
 
 PUMP_FLOW_GRACE_S = 10  # thời gian mồi nước sau khi bật bơm
+SHORT_RUN_MIN_S = 2            # lần bơm ngắn tối thiểu để xét "chạy mà không ra nước"
+SHORT_RUN_NO_WATER_L = 0.005   # ~2 xung YF-S201: coi như không có nước
 
 
 def incident_type(name: str) -> IncidentType:
@@ -111,10 +113,29 @@ def evaluate(rt: DeviceRuntime, cfg: dict, now: datetime) -> list[Finding]:
                     "pump_dry_run", rt.pump_on_since + timedelta(seconds=PUMP_FLOW_GRACE_S),
                     f"Bơm bật {int(on_for)} giây nhưng lưu lượng < {p['min_flow_lpm']} L/phút",
                     {"flow_lpm": latest.flow_lpm, "pump_on_for_s": int(on_for)}))
-        if on_for > p["max_minutes"] * 60 + 60:
+        if on_for > p["max_seconds"] + 60:
             findings.append(Finding("pump_overrun", rt.pump_on_since,
-                                    f"Bơm đã chạy {int(on_for // 60)} phút (giới hạn {p['max_minutes']})",
+                                    f"Bơm đã chạy {int(on_for)} giây (giới hạn {p['max_seconds']} giây)",
                                     {"pump_on_for_s": int(on_for)}))
+
+    # Lần bơm NGẮN (vd. chậu demo 3 giây) kết thúc trước khi kịp xét chạy khô ở trên:
+    # bơm đã chạy ≥ SHORT_RUN_MIN_S mà bộ đếm lưu lượng không nhích -> bơm hỏng / mất nước / tắc ống.
+    run = rt.irrigation
+    if run is not None and run.ended_at is not None:      # vừa tắt bơm: biết số lít ngay, không chờ thấm
+        ev = {"started_at": run.started_at, "pump_seconds": round(run.pump_seconds), "liters": run.liters,
+              "irrigation_id": None}
+    else:
+        ev = rt.last_irrigation
+    newer_run = run is not None and ev is not None and run.started_at > ev["started_at"]
+    if (not latest.pump_on and not latest.pump_lockout and ev and not newer_run
+            and (ev.get("pump_seconds") or 0) >= SHORT_RUN_MIN_S
+            and (ev.get("liters") or 0) < SHORT_RUN_NO_WATER_L
+            and not any(f.type == "pump_dry_run" for f in findings)):
+        findings.append(Finding(
+            "pump_dry_run", ev["started_at"],
+            f"Bơm chạy {ev.get('pump_seconds')} giây nhưng không đếm được nước (0 L)",
+            {"pump_seconds": ev.get("pump_seconds"), "liters": ev.get("liters"),
+             "irrigation_id": ev.get("irrigation_id"), "reported_by": "short_run"}))
 
     if not latest.pump_on:
         w = rt.window(p["leak_seconds"], now)
