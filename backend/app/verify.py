@@ -5,7 +5,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import nullcontext
 from typing import Awaitable, Callable
+
+try:                                  # có khi chạy bằng ddtrace-run (Docker); không bắt buộc khi chạy thử
+    from ddtrace import tracer
+except ImportError:                   # pragma: no cover
+    tracer = None
 
 from .commands import commands
 from .config import settings
@@ -259,15 +265,30 @@ async def run_verification(incident_id: str) -> None:
             return
         cfg = await db.get_settings()
         verifier = VERIFIERS.get(inc["type"], _verify_online)
-        try:
-            ok, evidence = await verifier(inc, cfg)
-        except Exception as exc:  # không để task chết lặng lẽ
-            log.exception("Verification crashed", extra={"incident_id": incident_id})
-            ok, evidence = False, f"Lỗi khi kiểm chứng: {exc}"
-        if ok:
-            await incidents.mark_resolved(incident_id, evidence)
-        else:
-            await incidents.verification_failed(incident_id, evidence)
+        traced = tracer is not None and getattr(tracer, "enabled", False)
+        # Một span APM bao trọn quá trình kiểm chứng: lệnh chạy thử, truy vấn MongoDB, kết luận
+        with (tracer.trace("agriguard.verify_incident", service=settings.service, resource=inc["type"])
+              if traced else nullcontext()) as span:
+            if span is not None:
+                span.set_tag("incident_id", incident_id)
+                span.set_tag("device_id", inc["device_id"])
+                span.set_tag("incident_type", inc["type"])
+                trace_id = str(span.trace_id & 0xFFFFFFFFFFFFFFFF)   # 64 bit thấp – dạng UI Datadog dùng
+                await incidents.add_note(incident_id, "datadog", "datadog_trace",
+                                         "APM trace \"agriguard.verify_incident\": ghi lại lệnh chạy thử, "
+                                         "các truy vấn MongoDB và kết luận", trace_id=trace_id)
+            try:
+                ok, evidence = await verifier(inc, cfg)
+            except Exception as exc:  # không để task chết lặng lẽ
+                log.exception("Verification crashed", extra={"incident_id": incident_id})
+                ok, evidence = False, f"Lỗi khi kiểm chứng: {exc}"
+            if span is not None:
+                span.set_tag("verification.ok", ok)
+                span.set_tag("verification.evidence", evidence)
+            if ok:
+                await incidents.mark_resolved(incident_id, evidence)
+            else:
+                await incidents.verification_failed(incident_id, evidence)
     finally:
         _running.discard(incident_id)
 

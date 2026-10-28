@@ -26,6 +26,11 @@ def _entry(actor: str, action: str, note: str = "", **extra) -> dict:
     return {"at": utcnow(), "actor": actor, "action": action, "note": note, **extra}
 
 
+def _dd_entry(note: str, **extra) -> list[dict]:
+    """Mục dòng thời gian ghi lại những gì AgriGuard đã gửi sang Datadog (chỉ khi Datadog đang bật)."""
+    return [_entry("datadog", "datadog_signal", note, **extra)] if metrics.enabled else []
+
+
 class IncidentService:
     async def find_active(self, device_id: str, type_: str) -> dict | None:
         return await db.incidents.find_one({"device_id": device_id, "type": type_, "status": {"$in": list(ACTIVE)}})
@@ -43,7 +48,8 @@ class IncidentService:
             pushes = []
             if detected_by not in existing.get("detected_by", []):
                 update["$addToSet"] = {"detected_by": detected_by}
-                pushes.append(_entry(detected_by, "detected", message))
+                pushes.append(_entry(detected_by, "detected", message, **({"link": datadog["link"]}
+                                                                         if datadog and datadog.get("link") else {})))
             elif not existing.get("condition_active", True):
                 pushes.append(_entry("system", "condition_returned", message))
             if datadog:
@@ -64,6 +70,9 @@ class IncidentService:
             "mttd_s": max(0, round((now - started).total_seconds())),
             "timeline": [_entry(detected_by, "opened", message)],
         }
+        doc["timeline"] += _dd_entry(
+            "Gửi sự kiện lên Event Stream, log WARNING \"Incident opened\", metric incident.opened & mttd_seconds "
+            "– monitor và dashboard thấy sự cố này", signals=["event", "log", "metric"])
         if datadog:
             doc["datadog"] = datadog
         await db.incidents.insert_one(doc)
@@ -128,7 +137,10 @@ class IncidentService:
             {"_id": incident_id},
             {"$set": {"status": "resolved", "resolved_at": now, "mttr_s": mttr, "verification": evidence,
                       "condition_active": False},
-             "$push": {"timeline": _entry("system", "verified", evidence)}},
+             "$push": {"timeline": {"$each": [_entry("system", "verified", evidence)] + _dd_entry(
+                 f"Gửi sự kiện \"Đã khắc phục\" (success), log \"Incident resolved\", metric incident.resolved & "
+                 f"mttr_seconds = {mttr}s – monitor Datadog sẽ tự về OK khi metric bình thường",
+                 signals=["event", "log", "metric"])}}},
         )
         tags = {"device_id": inc["device_id"], "type": inc["type"], "severity": inc["severity"]}
         metrics.increment("incident.resolved", tags=tags)
@@ -144,12 +156,17 @@ class IncidentService:
             {"_id": incident_id},
             {"$set": {"status": "acknowledged"},
              "$inc": {"verification_failures": 1},
-             "$push": {"timeline": _entry("system", "verification_failed", reason)}},
+             "$push": {"timeline": {"$each": [_entry("system", "verification_failed", reason)] + _dd_entry(
+                 "Gửi sự kiện \"Kiểm chứng không đạt\", log WARNING \"Incident verification failed\" (log monitor "
+                 "đếm số lần), metric incident.verification_failed", signals=["event", "log", "metric"])}}},
         )
         inc = await db.incidents.find_one({"_id": incident_id}, {"type": 1, "device_id": 1, "verification_failures": 1})
         inc = inc or {}
         metrics.increment("incident.verification_failed", tags={"type": inc.get("type")})
         # incident_event: trường cố định để log monitor "đóng sự cố khi chưa sửa" đếm chính xác
+        metrics.event(f"[AgriGuard] Kiểm chứng KHÔNG đạt – {incident_id}", reason, alert_type="warning",
+                      tags=[f"device_id:{inc.get('device_id')}", f"incident_type:{inc.get('type')}",
+                            f"incident_id:{incident_id}"])
         log.warning("Incident verification failed", extra={
             "incident_event": "verification_failed", "incident_id": incident_id, "device_id": inc.get("device_id"),
             "incident_type": inc.get("type"), "verification_failures": inc.get("verification_failures"),
@@ -170,11 +187,14 @@ class IncidentService:
             )
             return {"incident_id": inc["_id"], "created": created}
         if transition in ("recovered", "no data recovered"):
-            inc = await self.find_active(device_id, type_)
+            inc = await self.find_active(device_id, type_) or await db.incidents.find_one(
+                {"device_id": device_id, "type": type_, "status": "resolved"}, sort=[("resolved_at", -1)])
             if inc:
                 await db.incidents.update_one({"_id": inc["_id"]}, {"$set": {"datadog": {**inc.get("datadog", {}), **dd}}})
                 await self.add_note(inc["_id"], "datadog", "monitor_recovered",
-                                    "Monitor Datadog đã trở về OK – chờ người vận hành xác nhận")
+                                    "Monitor Datadog đã trở về OK – xác nhận độc lập: lỗi đã hết" if inc["status"] == "resolved"
+                                    else "Monitor Datadog đã trở về OK – chờ người vận hành xác nhận",
+                                    **({"link": payload["link"]} if payload.get("link") else {}))
                 return {"incident_id": inc["_id"], "created": False}
         return {"ignored": transition}
 

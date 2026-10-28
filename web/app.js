@@ -32,6 +32,7 @@
     opened: "Mở sự cố", detected: "Phát hiện thêm", acknowledged: "Tiếp nhận", resolve_requested: "Báo đã xử lý",
     verification_started: "Bắt đầu kiểm chứng", verified: "Kiểm chứng đạt – đóng sự cố", verification_failed: "Kiểm chứng KHÔNG đạt",
     condition_cleared: "Điều kiện lỗi đã hết", condition_returned: "Lỗi xuất hiện lại", monitor_recovered: "Datadog: monitor OK", note: "Ghi chú",
+    datadog_signal: "Đã gửi sang Datadog", datadog_trace: "Datadog APM trace",
   };
 
   // ------------------------------------------------------------------ API
@@ -123,7 +124,8 @@
             : tile("Độ ẩm không khí", statusTag("critical", "Lỗi"), "Mất tín hiệu", "", "", true),
       L.soil_ok === false ? tile("Độ ẩm đất", soilTag, "Lỗi", "", `ADC = ${L.soil_raw ?? "–"}`, true)
             : tile("Độ ẩm đất", soilTag, num(L.soil_moisture_pct, 0), "%",
-                   (cfg ? `Tưới < ${cfg.pump.soil_dry_pct}% · dừng ≥ ${cfg.pump.soil_target_pct}%` : "") + dryHint(d.prediction)),
+                   (cfg ? `Tưới < ${cfg.pump.soil_dry_pct}% · dừng ≥ ${cfg.pump.soil_target_pct}%` : "") +
+                   (L.soil_raw != null ? ` · ADC ${L.soil_raw}` : "") + dryHint(d.prediction)),
       tile("Lưu lượng nước", L.pump_on ? statusTag("good", "Bơm chạy") : statusTag("idle", "Bơm tắt"), num(L.flow_lpm, 2), "L/phút",
            L.pump_on && L.flow_lpm < (cfg?.pump.min_flow_lpm ?? 0.3) ? "⚠ Bơm chạy nhưng không có nước" : "YF‑S201"),
       tile("Thiết bị", online ? statusTag("good", "Online") : statusTag("critical", "Offline"), esc(d._id), "",
@@ -243,8 +245,7 @@
       ? `<span class="small"><span class="spinner"></span> Hệ thống đang chạy thử và đo dữ liệu để kiểm chứng…</span>`
       : `${i.status === "open" ? `<button data-ack="${i._id}" ${busy ? "disabled" : ""}>Tiếp nhận</button>` : ""}
          <button class="primary" data-resolve="${i._id}" ${busy ? "disabled" : ""}>Đã xử lý – kiểm chứng</button>`;
-    const tl = (i.timeline || []).map((t) => `<li><time>${fmtTime.format(new Date(t.at))}</time><b>${esc(TL_ACTIONS[t.action] || t.action)}</b>
-        <span class="muted">(${esc(DETECTORS[t.actor] || t.actor)})</span> ${esc(t.note || "")}</li>`).join("");
+    const tl = timelineHtml(i);
     return `<div class="incident ${sevCls}" data-id="${esc(i._id)}">
       <div class="line1">${statusTag(sevCls, sevLabel)}<span class="title">${esc(i.title)}</span>
         <span class="chip">${esc(i.device_id)}</span><span class="chip st-${i.status}">${INC_STATUS[i.status] || i.status}</span>
@@ -253,8 +254,36 @@
       <div class="meta"><span>Mở lúc ${fmtDateTime.format(new Date(i.opened_at))} (${ago(i.opened_at)})</span>
         <span>Phát hiện bởi: ${(i.detected_by || []).map((x) => DETECTORS[x] || x).join(", ")}</span>
         <span>MTTD ${dur(i.mttd_s)}</span><span class="muted">${esc(i._id)}</span></div>
+      ${ddLinks(i)}
       <details><summary class="small">Dòng thời gian điều tra (${(i.timeline || []).length})</summary><ul class="timeline">${tl}</ul></details>
       <div class="actions">${actions}</div></div>`;
+  }
+
+  // ---- Datadog trong quy trình điều tra: link sâu tới đúng monitor / log / sự kiện / trace của sự cố
+  const ddApp = () => S.meta?.datadog_app;
+  function ddLinks(i) {
+    const app = ddApp();
+    if (!app) return "";
+    const from = new Date(i.fault_started_at || i.opened_at).getTime() - 10 * 60e3;
+    const to = (i.resolved_at ? new Date(i.resolved_at).getTime() : Date.now()) + 10 * 60e3;
+    const q = (s) => encodeURIComponent(s);
+    const links = [
+      ["Monitor", `https://${app}/monitors/manage?q=${q(`tag:"incident_type:${i.type}"`)}`],
+      ["Logs", `https://${app}/logs?query=${q(`"${i._id}"`)}&from_ts=${from}&to_ts=${to}&live=false`],
+      ["Sự kiện", `https://${app}/event/explorer?query=${q(`incident_id:${i._id}`)}&from_ts=${from}&to_ts=${to}&live=false`],
+      ["Metric thiết bị", `https://${app}/metric/explorer?exp_metric=${q("agriguard.flow.rate,agriguard.pump.state,agriguard.soil.moisture")}&exp_scope=${q(`device_id:${i.device_id}`)}&from_ts=${from}&to_ts=${to}&live=false`],
+    ];
+    return `<div class="ddlinks"><span class="small muted">Điều tra trên Datadog:</span>${links.map(([l, u]) =>
+      `<a class="chip datadog" href="${u}" target="_blank" rel="noopener">${l} ↗</a>`).join("")}</div>`;
+  }
+  function timelineHtml(i) {
+    const app = ddApp();
+    return (i.timeline || []).map((t) => {
+      const link = t.trace_id && app ? `https://${app}/apm/trace/${t.trace_id}` : t.link;
+      const a = link ? ` <a href="${esc(link)}" target="_blank" rel="noopener">${t.trace_id ? "mở trace" : "mở monitor"} ↗</a>` : "";
+      return `<li class="${t.actor === "datadog" ? "dd" : ""}"><time>${fmtTime.format(new Date(t.at))}</time><b>${esc(TL_ACTIONS[t.action] || t.action)}</b>
+        <span class="muted">(${esc(DETECTORS[t.actor] || t.actor)})</span> ${esc(t.note || "")}${a}</li>`;
+    }).join("");
   }
 
   function renderIncidents() {
@@ -280,7 +309,8 @@
       <div class="table-wrap"><table><thead><tr><th>Mã</th><th>Thiết bị</th><th>Loại</th><th>Phát hiện bởi</th><th>Mở</th><th>Đóng</th><th>MTTD</th><th>MTTR</th><th>Bằng chứng kiểm chứng</th></tr></thead>
       <tbody>${rows.map((i) => `<tr><td>${esc(i._id)}</td><td>${esc(i.device_id)}</td><td>${esc(i.title)}</td><td>${(i.detected_by || []).map((x) => DETECTORS[x] || x).join(", ")}</td>
         <td>${fmtDateTime.format(new Date(i.opened_at))}</td><td>${i.resolved_at ? fmtDateTime.format(new Date(i.resolved_at)) : "–"}</td>
-        <td>${dur(i.mttd_s)}</td><td>${dur(i.mttr_s)}</td><td>${esc(i.verification || "")}</td></tr>`).join("") || '<tr><td colspan="9" class="muted">Trống</td></tr>'}</tbody></table></div>`;
+        <td>${dur(i.mttd_s)}</td><td>${dur(i.mttr_s)}</td><td>${esc(i.verification || "")}
+        <details><summary class="small">Dòng thời gian (${(i.timeline || []).length})</summary><ul class="timeline">${timelineHtml(i)}</ul>${ddLinks(i)}</details></td></tr>`).join("") || '<tr><td colspan="9" class="muted">Trống</td></tr>'}</tbody></table></div>`;
   }
 
   function renderCommands() {

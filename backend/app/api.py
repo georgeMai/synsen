@@ -126,7 +126,13 @@ async def health():
 async def meta():
     return {"site": settings.site, "incident_types": {k: v.__dict__ for k, v in INCIDENT_TYPES.items()},
             "admin_required": bool(settings.admin_token), "sim_api": settings.enable_sim_api,
-            "command_ack_timeout_s": settings.command_ack_timeout_s}
+            "command_ack_timeout_s": settings.command_ack_timeout_s,
+            "datadog_app": _dd_app_host() if metrics.enabled else None}
+
+
+def _dd_app_host() -> str:
+    site = (settings.dd_site or "datadoghq.com").strip().lower()
+    return {"datadoghq.com": "app.datadoghq.com", "datadoghq.eu": "app.datadoghq.eu"}.get(site, site)
 
 
 # ---------------------------------------------------------------- devices & telemetry

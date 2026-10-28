@@ -43,6 +43,7 @@ class Settings:
     metrics_enabled: bool = field(default_factory=lambda: _bool("METRICS_ENABLED", False))
     statsd_host: str = field(default_factory=lambda: _env("DD_AGENT_HOST", "localhost"))
     statsd_port: int = field(default_factory=lambda: _int("DD_DOGSTATSD_PORT", 8125))
+    dd_site: str = field(default_factory=lambda: _env("DD_SITE", "datadoghq.com"))
 
     # Bảo vệ API ghi (điều khiển, cài đặt, xử lý sự cố). Để trống = không yêu cầu.
     admin_token: str = field(default_factory=lambda: _env("ADMIN_TOKEN", ""))

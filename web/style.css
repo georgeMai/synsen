@@ -224,3 +224,6 @@ th { color: var(--text-2); font-weight: 600; background: var(--surface-2); }
 }
 
 .actuator .last.why { margin-top: 4px; color: var(--text); }
+.timeline li.dd { color: color-mix(in srgb, #632ca6 75%, var(--text)); }
+.timeline li.dd::before { background: #632ca6; }
+.ddlinks { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 8px; }
