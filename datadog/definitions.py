@@ -76,14 +76,15 @@ MONITORS = [
     ),
     _monitor(
         "Bơm chạy khô / tắc ống",
-        # = 1 khi thiết bị đã khoá bơm, hoặc khi bơm bật mà lưu lượng ≈ 0 suốt 1 phút
-        "min(last_1m):max:agriguard.pump.lockout{*} by {device_id} + "
-        "(min:agriguard.pump.state{*} by {device_id} - max:agriguard.flow.rate{*} by {device_id}) > 0.7",
+        # fault.active do backend tính (cùng luật mở sự cố): ESP32 khoá bơm, bơm chạy lâu mà không có nước,
+        # HOẶC lần bơm ngắn (vd. 3 giây) mà bộ đếm lưu lượng không nhích. Truy vấn cũ "bơm bật suốt 1 phút"
+        # không bao giờ đỏ khi mỗi lần bơm chỉ chạy vài giây.
+        "max(last_1m):max:agriguard.fault.active{fault:pump_dry_run} by {device_id} >= 1",
         "pump_dry_run", 1,
         _msg("Bơm chạy khô / tắc ống",
              "So sánh `agriguard.pump.state` với `agriguard.flow.rate`; xem lệnh bơm trong log (command_id).",
              "Châm nước vào bể / thông ống hút, sau đó bấm “Đã xử lý” – hệ thống sẽ chạy thử bơm 45 giây."),
-        critical=0.7,
+        critical=1,
     ),
     _monitor(
         "Có dòng chảy khi bơm tắt (relay kẹt / rò)",
@@ -185,13 +186,14 @@ MONITORS = [
     ),
     # ---------------- Forecast (Datadog dự báo xu hướng) ----------------
     _monitor(
-        "Dự báo cây sắp thiếu nước trong 2 giờ (forecast)",
+        "Dự báo cây sắp thiếu nước trong 12 giờ (forecast)",
         # Bình thường bơm tự tưới khi đất < 35% nên dự báo không bao giờ chạm 25%.
         # Chạm -> tưới tự động đang không hoạt động (bị khoá do sự cố, chế độ OFF, hết nước, bơm hỏng).
-        "min(next_2h):forecast(avg:agriguard.soil.moisture{*} by {device_id}, 'linear', 1, "
-        "interval=300, history='6h', model='reactive') <= 25",
+        # Datadog chỉ nhận cửa sổ dự báo từ 12 giờ trở lên (next_2h bị từ chối: "query is invalid")
+        "min(next_12h):forecast(avg:agriguard.soil.moisture{*} by {device_id}, 'linear', 1, "
+        "interval=600, history='1d', model='reactive') <= 25",
         "soil_drying_forecast", 2,
-        _msg("Dự báo đất sẽ khô dưới 25% trong 2 giờ tới",
+        _msg("Dự báo đất sẽ khô dưới 25% trong 12 giờ tới",
              "Xem `agriguard.soil.minutes_to_dry`, chế độ bơm (AUTO/MANUAL/OFF) và các sự cố đang khoá bơm.",
              "Gỡ nguyên nhân khoá tưới hoặc tưới tay trước khi cây bị héo.", webhook=False),
         critical=25, warning=30,

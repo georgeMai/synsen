@@ -25,7 +25,7 @@
   {
     "name": "[AgriGuard] Bơm chạy khô / tắc ống",
     "type": "query alert",
-    "query": "min(last_1m):max:agriguard.pump.lockout{*} by {device_id} + (min:agriguard.pump.state{*} by {device_id} - max:agriguard.flow.rate{*} by {device_id}) > 0.7",
+    "query": "max(last_1m):max:agriguard.fault.active{fault:pump_dry_run} by {device_id} >= 1",
     "message": "{{#is_alert}}🚨 **Bơm chạy khô / tắc ống** trên `{{device_id.name}}`\n\n**Điều tra:** So sánh `agriguard.pump.state` với `agriguard.flow.rate`; xem lệnh bơm trong log (command_id).\n\n**Khắc phục:** Châm nước vào bể / thông ống hút, sau đó bấm “Đã xử lý” – hệ thống sẽ chạy thử bơm 45 giây.{{/is_alert}}\n{{#is_recovery}}✅ Bơm chạy khô / tắc ống – tín hiệu đã trở lại bình thường. Xác nhận khắc phục trên web AgriGuard để hệ thống kiểm chứng và đóng sự cố.{{/is_recovery}}\n\nDashboard: AgriGuard – IoT Irrigation Operations @webhook-agriguard",
     "priority": 1,
     "tags": [
@@ -40,7 +40,7 @@
       "notify_no_data": false,
       "renotify_interval": 0,
       "thresholds": {
-        "critical": 0.7
+        "critical": 1
       }
     }
   },
@@ -290,10 +290,10 @@
     }
   },
   {
-    "name": "[AgriGuard] Dự báo cây sắp thiếu nước trong 2 giờ (forecast)",
+    "name": "[AgriGuard] Dự báo cây sắp thiếu nước trong 12 giờ (forecast)",
     "type": "query alert",
-    "query": "min(next_2h):forecast(avg:agriguard.soil.moisture{*} by {device_id}, 'linear', 1, interval=300, history='6h', model='reactive') <= 25",
-    "message": "{{#is_alert}}🚨 **Dự báo đất sẽ khô dưới 25% trong 2 giờ tới** trên `{{device_id.name}}`\n\n**Điều tra:** Xem `agriguard.soil.minutes_to_dry`, chế độ bơm (AUTO/MANUAL/OFF) và các sự cố đang khoá bơm.\n\n**Khắc phục:** Gỡ nguyên nhân khoá tưới hoặc tưới tay trước khi cây bị héo.{{/is_alert}}\n{{#is_recovery}}✅ Dự báo đất sẽ khô dưới 25% trong 2 giờ tới – tín hiệu đã trở lại bình thường. Xác nhận khắc phục trên web AgriGuard để hệ thống kiểm chứng và đóng sự cố.{{/is_recovery}}\n\nDashboard: AgriGuard – IoT Irrigation Operations ",
+    "query": "min(next_12h):forecast(avg:agriguard.soil.moisture{*} by {device_id}, 'linear', 1, interval=600, history='1d', model='reactive') <= 25",
+    "message": "{{#is_alert}}🚨 **Dự báo đất sẽ khô dưới 25% trong 12 giờ tới** trên `{{device_id.name}}`\n\n**Điều tra:** Xem `agriguard.soil.minutes_to_dry`, chế độ bơm (AUTO/MANUAL/OFF) và các sự cố đang khoá bơm.\n\n**Khắc phục:** Gỡ nguyên nhân khoá tưới hoặc tưới tay trước khi cây bị héo.{{/is_alert}}\n{{#is_recovery}}✅ Dự báo đất sẽ khô dưới 25% trong 12 giờ tới – tín hiệu đã trở lại bình thường. Xác nhận khắc phục trên web AgriGuard để hệ thống kiểm chứng và đóng sự cố.{{/is_recovery}}\n\nDashboard: AgriGuard – IoT Irrigation Operations ",
     "priority": 2,
     "tags": [
       "app:agriguard",
