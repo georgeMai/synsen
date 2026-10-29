@@ -26,7 +26,7 @@
   const ACTIONS = { on: "Bật", off: "Tắt", clear_lockout: "Gỡ khoá" };
   const CMD_STATUS = { pending: "đang gửi", sent: "đã gửi, chờ xác nhận", acked: "đã xác nhận", rejected: "bị từ chối", timeout: "không phản hồi", failed: "gửi lỗi" };
   const INC_STATUS = { open: "Mới", acknowledged: "Đã tiếp nhận", verifying: "Đang kiểm chứng", resolved: "Đã khắc phục" };
-  const DETECTORS = { rules: "luật hệ thống", device: "thiết bị", datadog: "Datadog" };
+  const DETECTORS = { rules: "luật hệ thống", device: "thiết bị", datadog: "Datadog", system: "hệ thống", drill: "diễn tập" };
   const SEVERITY = { critical: ["critical", "Nghiêm trọng"], warning: ["warning", "Cảnh báo"], info: ["idle", "Thông tin"] };
   const TL_ACTIONS = {
     opened: "Mở sự cố", detected: "Phát hiện thêm", acknowledged: "Tiếp nhận", resolve_requested: "Báo đã xử lý",
@@ -373,7 +373,134 @@
     if (S.tab === "commands") renderCommands();
     if (S.tab === "settings") renderSettings();
     if (S.tab === "sim") renderSim();
+    if (S.tab === "metrics") renderMetrics();
   }
+
+  // ------------------------------------------------------------------ tab: Metrics
+  // Danh mục metric AgriGuard gửi lên Datadog + giá trị hiện tại của thiết bị đang chọn
+  const onOff = (v) => (v == null ? "–" : v ? "1 (bật)" : "0 (tắt)");
+  const unit = (v, u) => (v === "–" ? "–" : `${v} ${u}`);
+  const METRIC_GROUPS = [
+    ["Cảm biến môi trường", [
+      ["soil.moisture", "gauge", "Độ ẩm đất (%) – monitor forecast “cây sắp thiếu nước”", (d) => unit(num(d.latest?.soil_moisture_pct, 0), "%")],
+      ["soil.raw", "gauge", "Số ADC thô của cảm biến đất – hiệu chuẩn, phát hiện tuột dây/chập", (d) => d.latest?.soil_raw ?? "–"],
+      ["air.temperature", "gauge", "Nhiệt độ không khí (°C) từ DHT11", (d) => unit(num(d.latest?.air_temp_c), "°C")],
+      ["air.humidity", "gauge", "Độ ẩm không khí (%) – kiểm tra phun sương có hiệu quả", (d) => unit(num(d.latest?.air_humidity_pct, 0), "%")],
+      ["flow.rate", "gauge", "Lưu lượng nước (L/phút) từ YF‑S201", (d) => unit(num(d.latest?.flow_lpm, 2), "L/phút")],
+      ["flow.volume_ml", "count", "Lượng nước (mL) mỗi bản tin – cộng dồn tổng nước; monitor anomaly lượng nước"],
+      ["sensor.ok", "gauge", "1 = cảm biến đọc hợp lệ (tag sensor:dht11 | soil)", (d) => (d.latest ? `DHT11 ${d.latest.dht_ok ? 1 : 0} · đất ${d.latest.soil_ok ? 1 : 0}` : "–")],
+      ["sensor.health", "gauge", "Sức khoẻ từng bộ phận theo backend (dht11, soil, flow, pump, mist)",
+        (d) => (d.health ? Object.entries(d.health).map(([k, v]) => `${k} ${v === "ok" ? 1 : 0}`).join(" · ") : "–")],
+    ]],
+    ["Bơm và phun sương", [
+      ["pump.state", "gauge", "1 = bơm đang chạy. Đặt cạnh flow.rate để thấy bơm chạy khô", (d) => onOff(d.latest?.pump_on)],
+      ["pump.lockout", "gauge", "1 = ESP32 đã tự khoá bơm vì chạy khô", (d) => onOff(d.latest?.pump_lockout)],
+      ["pump.runtime_seconds", "count", "Tổng giây bơm chạy – giờ chạy, hao mòn"],
+      ["mist.state", "gauge", "1 = máy phun sương đang chạy", (d) => onOff(d.latest?.mist_on)],
+      ["mist.runtime_seconds", "count", "Tổng giây máy phun chạy"],
+      ["control.decision", "count", "Quyết định bật/tắt của bộ điều khiển tự động (tag actuator, action, reason)"],
+    ]],
+    ["Sức khoẻ ESP32", [
+      ["device.online", "gauge", "1 = online – monitor “Thiết bị mất kết nối”", (d) => onOff(d.online)],
+      ["device.uptime", "gauge", "Giây từ lần khởi động gần nhất; rơi về 0 = vừa reset", (d) => (d.status?.uptime_s != null ? `${d.status.uptime_s} s` : "–")],
+      ["device.reboots", "count", "Số lần khởi động lại (tag reset_reason: brownout, watchdog…) – chỉ có sau lần reset đầu tiên", (d) => (d.status?.reset_reason ? `lần gần nhất: ${d.status.reset_reason}` : "–")],
+      ["device.free_heap", "gauge", "Bộ nhớ trống (byte) – monitor forecast sắp cạn bộ nhớ", (d) => (d.status?.free_heap != null ? `${num(d.status.free_heap, 0)} B` : "–")],
+      ["device.rssi", "gauge", "Cường độ Wi‑Fi (dBm); dưới −80 là yếu", (d) => (d.latest?.rssi_dbm != null ? `${d.latest.rssi_dbm} dBm` : "–")],
+      ["device.wifi_reconnects", "gauge", "Số lần kết nối lại Wi‑Fi", (d) => d.status?.wifi_reconnects ?? "–"],
+      ["device.mqtt_reconnects", "gauge", "Số lần kết nối lại MQTT", (d) => d.status?.mqtt_reconnects ?? "–"],
+      ["device.events", "count", "Sự kiện ESP32 tự báo (tag event_type: safety_lockout, auto_off, flow_noise…)"],
+    ]],
+    ["Phản hồi đất và dự báo", [
+      ["irrigation.response_pct_per_liter", "gauge", "Phản hồi đất của từng lần tưới (% độ ẩm / lít)", (d, x) => unit(num(x.irr?.ratio_pct_per_l, 2), "%/L")],
+      ["irrigation.baseline_pct_per_liter", "gauge", "Mức bình thường học từ MongoDB", (d, x) => unit(num(x.irrBase?.median_pct_per_l, 2), "%/L")],
+      ["irrigation.response_zscore", "gauge", "z‑score lần tưới gần nhất: ≤ −3 nước không tới gốc, ≥ +3 phản hồi cao bất thường", (d, x) => num(x.irr?.zscore, 2)],
+      ["irrigation.liters", "gauge", "Số lít của lần tưới gần nhất", (d, x) => unit(num(x.irr?.liters, 3), "L")],
+      ["irrigation.events", "count", "Số lần tưới đã chấm điểm (tag status, reason)"],
+      ["soil.drying_pct_per_hour", "gauge", "Tốc độ đất khô (%/giờ), hồi quy tuyến tính", (d) => unit(num(d.prediction?.drying_pct_per_hour, 2), "%/giờ")],
+      ["soil.minutes_to_dry", "gauge", "Còn bao nhiêu phút đất khô tới ngưỡng tưới", (d) => unit(num(d.prediction?.minutes_to_dry, 0), "phút")],
+      ["irrigation.predicted_liters_next", "gauge", "Số lít cần cho lần tưới kế tiếp", (d) => unit(num(d.prediction?.liters_next_irrigation, 2), "L")],
+      ["water.predicted_liters_per_day", "gauge", "Dự báo nước cần mỗi ngày", (d) => unit(num(d.prediction?.liters_per_day, 1), "L/ngày")],
+    ]],
+    ["Sự cố (Detect – Investigate – Resolve)", [
+      ["fault.active", "gauge", "1 = lỗi đang tồn tại theo luật backend (tag fault) – nhiều monitor dùng, gồm “Bơm chạy khô”",
+        () => { const t = [...new Set(S.incidents.filter((i) => i.device_id === S.selected).map((i) => i.type))]; return t.length ? t.join(", ") : "không có lỗi"; }],
+      ["incident.open", "gauge", "Số sự cố đang mở (tag type, severity)", () => String(S.incidents.length)],
+      ["incident.opened", "count", "Số sự cố mới mở"],
+      ["incident.resolved", "count", "Số sự cố đã đóng sau kiểm chứng đạt"],
+      ["incident.verification_failed", "count", "Số lần báo “đã sửa” mà kiểm chứng thất bại – log monitor dựa vào đây"],
+      ["incident.mttd_seconds", "histogram", "MTTD: lỗi xảy ra → phát hiện"],
+      ["incident.mttr_seconds", "histogram", "MTTR: mở → đóng sự cố"],
+      ["incident.time_to_ack_seconds", "histogram", "Mở → người vận hành tiếp nhận"],
+      ["webhook.datadog", "count", "Datadog gọi webhook về AgriGuard (tag transition)"],
+    ]],
+    ["Lệnh điều khiển", [
+      ["command.sent", "count", "Lệnh gửi xuống thiết bị"],
+      ["command.acked", "count", "Lệnh được thiết bị xác nhận"],
+      ["command.acked_in_time", "count", "Lệnh xác nhận trong 10 giây – SLO lệnh"],
+      ["command.timeout", "count", "Lệnh không được xác nhận – monitor “Thiết bị không xác nhận lệnh”"],
+      ["command.ack_latency_ms", "histogram", "Độ trễ gửi lệnh → ack – monitor anomaly",
+        () => { const c = (S.commands || []).find((x) => x.latency_ms != null); return c ? `${c.latency_ms} ms (lệnh gần nhất)` : "–"; }],
+      ["command.ack_unknown", "count", "Ack không khớp lệnh nào"],
+      ["command.publish_failed", "count", "Gửi lệnh lên MQTT thất bại"],
+    ]],
+    ["Đường ống dữ liệu và hạ tầng", [
+      ["ingest.messages", "count", "Bản tin MQTT backend xử lý – monitor anomaly lượng bản tin"],
+      ["ingest.latency_ms", "histogram", "Cảm biến đo → ghi xong MongoDB – monitor p95 > 5 s"],
+      ["ingest.within_slo", "count", "Bản tin ghi trong 5 giây – SLO dữ liệu"],
+      ["ingest.invalid_payload", "count", "Bản tin sai định dạng"],
+      ["ingest.errors", "count", "Lỗi khi xử lý bản tin"],
+      ["mongo.write_latency_ms", "histogram", "Thời gian ghi MongoDB"],
+      ["mqtt.connects", "count", "Backend kết nối tới Mosquitto"],
+      ["mqtt.disconnects", "count", "Backend mất kết nối Mosquitto"],
+      ["mqtt.messages_received", "count", "Tổng bản tin MQTT nhận được"],
+      ["engine.errors", "count", "Lỗi trong vòng chạy nền (tag loop)"],
+    ]],
+  ];
+  // Metric gắn tag device_id -> link Datadog lọc sẵn theo thiết bị đang chọn
+  const DEVICE_METRIC = /^(soil|air|flow|sensor|pump|mist|device|irrigation|water|fault)\./;
+  let metricsExtra = { at: 0 };
+
+  async function renderMetrics() {
+    const box = $("#tab-metrics");
+    const d = device();
+    if (d && (Date.now() - metricsExtra.at > 15000 || metricsExtra.dev !== d._id)) {
+      metricsExtra = { at: Date.now(), dev: d._id };
+      try {
+        const irr = await api(`devices/${encodeURIComponent(d._id)}/irrigation`);
+        metricsExtra.irrBase = irr.baseline;
+        metricsExtra.irr = (irr.events || []).find((e) => e.ratio_pct_per_l != null);
+      } catch { /* chưa có lần tưới nào */ }
+    }
+    const app = S.meta?.datadog_app;
+    const q = (S.metricQ || "").toLowerCase();
+    const scope = d ? `device_id:${d._id}` : "";
+    const link = (m) => (app
+      ? `<a href="https://${app}/metric/explorer?exp_metric=${encodeURIComponent("agriguard." + m)}${DEVICE_METRIC.test(m) && scope ? `&exp_scope=${encodeURIComponent(scope)}` : ""}" target="_blank" rel="noopener">Datadog ↗</a>`
+      : "");
+    const total = METRIC_GROUPS.reduce((n, [, rows]) => n + rows.length, 0);
+    const body = METRIC_GROUPS.map(([title, rows]) => {
+      const shown = rows.filter(([m, , desc]) => !q || `agriguard.${m} ${desc}`.toLowerCase().includes(q));
+      if (!shown.length) return "";
+      return `<tr class="grp"><td colspan="5">${esc(title)}</td></tr>` + shown.map(([m, type, desc, val]) => {
+        let v = "–";
+        if (d && val) { try { v = val(d, metricsExtra); } catch { /* thiếu dữ liệu */ } }
+        const cell = val ? esc(v) : '<span class="muted">xem trên Datadog</span>';
+        return `<tr><td><code>agriguard.${esc(m)}</code></td><td>${type}</td><td>${esc(desc)}</td><td class="val">${cell}</td><td>${link(m)}</td></tr>`;
+      }).join("");
+    }).join("");
+    const focused = document.activeElement?.id === "metric-q";
+    box.innerHTML = `<div class="metrics-head">
+        <p class="small muted">${total} metric AgriGuard gửi lên Datadog qua DogStatsD (tiền tố <code>agriguard.</code>, tag chung env/service; metric của thiết bị có thêm tag device_id, site, zone, source).
+        Cột “Hiện tại” là giá trị mới nhất của <b>${esc(d?._id || "–")}</b>${app ? "; bấm “Datadog ↗” để mở Metrics Explorer lọc sẵn thiết bị này" : "; bật Datadog để có link mở Metrics Explorer"}.</p>
+        <input id="metric-q" type="search" placeholder="Tìm metric… (vd. pump, zscore)" value="${esc(S.metricQ || "")}" aria-label="Tìm metric">
+      </div>
+      <div class="table-wrap"><table class="metrics"><thead><tr><th>Metric</th><th>Loại</th><th>Dùng để làm gì</th><th>Hiện tại</th><th></th></tr></thead>
+      <tbody>${body || '<tr><td colspan="5" class="muted">Không có metric khớp</td></tr>'}</tbody></table></div>`;
+    if (focused) { const i = $("#metric-q"); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }
+  }
+  document.addEventListener("input", (ev) => {
+    if (ev.target.id === "metric-q") { S.metricQ = ev.target.value; renderMetrics(); }
+  });
 
   // ------------------------------------------------------------------ data loops
   async function refresh() {
@@ -384,6 +511,7 @@
       if (S.selected) S.commands = await api(`commands?device_id=${encodeURIComponent(S.selected)}&limit=25`);
       renderTabs(); renderBanner(); renderKpis(); renderActuator("pump"); renderActuator("mist"); renderIncidents();
       if (S.tab === "commands") renderCommands();
+      if (S.tab === "metrics") renderMetrics();
     } catch (e) {
       $("#sys-status").textContent = "Mất kết nối máy chủ";
     }
