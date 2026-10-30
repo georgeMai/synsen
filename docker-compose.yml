@@ -9,7 +9,7 @@ services:
     image: eclipse-mosquitto:2
     restart: unless-stopped
     ports:
-      - "1883:1883"
+      - "${MQTT_PUBLIC_PORT:-1883}:1883"
     environment:
       MQTT_USER: ${MQTT_USER:-}
       MQTT_PASSWORD: ${MQTT_PASSWORD:-}
@@ -17,8 +17,11 @@ services:
       - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
       - mosquitto-data:/mosquitto/data
     # Sinh file mật khẩu từ biến môi trường để không phải commit secret vào repo
+    # rm -f: khi container chỉ khởi động lại (không tạo mới), /tmp còn file cũ và mosquitto_passwd -c
+    # của Mosquitto 2.x từ chối ghi đè ("Unable to open file ... File exists") -> broker lặp khởi động mãi
     command: >
-      sh -c 'cp /mosquitto/config/mosquitto.conf /tmp/m.conf &&
+      sh -c 'rm -f /tmp/passwd /tmp/m.conf &&
+      cp /mosquitto/config/mosquitto.conf /tmp/m.conf &&
       if [ -n "$$MQTT_PASSWORD" ]; then
         mosquitto_passwd -b -c /tmp/passwd "$$MQTT_USER" "$$MQTT_PASSWORD" &&
         chown mosquitto:mosquitto /tmp/passwd && chmod 0700 /tmp/passwd &&
@@ -41,7 +44,7 @@ services:
       DD_VERSION: "1.0.0"
       DD_LOGS_INJECTION: "true"
     ports:
-      - "${BACKEND_PORT:-8000}:8000"
+      - "${BACKEND_BIND:-0.0.0.0}:${BACKEND_PORT:-8000}:8000"   # VPS: BACKEND_BIND=127.0.0.1 (chỉ Caddy truy cập)
     depends_on:
       - mosquitto
     labels:
@@ -80,11 +83,11 @@ services:
       DD_LOGS_ENABLED: "true"
       DD_LOGS_CONFIG_CONTAINER_COLLECT_ALL: "true"
       DD_CONTAINER_EXCLUDE_LOGS: "name:datadog-agent"
+      # AgriGuard không dùng Remote Configuration/Fleet Automation -> tắt để agent status không báo "Not authorized"
+      DD_REMOTE_CONFIGURATION_ENABLED: "false"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./datadog/conf.d:/conf.d:ro
-    ports:
-      - "8125:8125/udp"
 
   mongo:
     image: mongo:7
