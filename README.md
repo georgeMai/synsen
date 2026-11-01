@@ -13,6 +13,10 @@ Hệ thống còn **dự báo** bao lâu nữa đất khô tới ngưỡng tư�
 monitor **forecast** (cây sắp thiếu nước, ESP32 sắp cạn bộ nhớ), **anomaly detection** (lượng nước, độ trễ lệnh,
 lượng bản tin) và có thể bật **Bits AI** để tự điều tra khi monitor báo động – xem [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
+Tab **Báo cáo nước** trên web dùng **MongoDB Aggregation Pipeline** (`$dateTrunc`, `$densify`, `$fill`, `$setWindowFields`,
+`$derivative`) trên `irrigation_events` và collection time series `telemetry`: lít nước, số lần tưới, nước không tới gốc,
+tốc độ khô của đất theo ngày, trung bình 7 ngày, dự báo lít nước ngày mai và số ngày bể trữ còn đủ dùng.
+
 ```
 ESP32 (DHT11, cảm biến đất, YF-S201, relay bơm, relay phun sương)      Simulator (dữ liệu GIẢ LẬP)
             │ MQTT: telemetry / status+LWT / ack / event                     │ cùng hợp đồng MQTT

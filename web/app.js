@@ -374,6 +374,7 @@
     if (S.tab === "settings") renderSettings();
     if (S.tab === "sim") renderSim();
     if (S.tab === "metrics") renderMetrics();
+    if (S.tab === "water") renderWater().catch(console.warn);
   }
 
   // ------------------------------------------------------------------ tab: Metrics
@@ -502,6 +503,95 @@
     if (ev.target.id === "metric-q") { S.metricQ = ev.target.value; renderMetrics(); }
   });
 
+
+  // ------------------------------------------------------------------ tab: Báo cáo nước (MongoDB Aggregation)
+  const FORECAST_METHOD = {
+    usage_avg7: "trung bình nước thực dùng 7 ngày trước ($setWindowFields)",
+    drying_rate: "tốc độ khô của đất ÷ phản hồi đất đã học (%/L) – chưa đủ 3 ngày dữ liệu tưới",
+  };
+  let waterCache = { at: 0 };
+
+  function waterBars(rows) {
+    const W = 760, H = 200, m = { l: 40, r: 8, t: 10, b: 26 };
+    const iw = W - m.l - m.r, ih = H - m.t - m.b;
+    const max = Math.max(0.1, ...rows.map((r) => Math.max(r.liters, r.need_liters || 0, r.liters_avg7 || 0)));
+    const bw = iw / rows.length;
+    const y = (v) => m.t + ih - (v / max) * ih;
+    const ticks = [0, max / 2, max];
+    let svg = `<svg viewBox="0 0 ${W} ${H}" class="water-svg" role="img" aria-label="Lít nước theo ngày">`;
+    ticks.forEach((v) => { svg += `<line x1="${m.l}" x2="${W - m.r}" y1="${y(v)}" y2="${y(v)}" stroke="var(--grid)"/><text x="${m.l - 6}" y="${y(v) + 4}" text-anchor="end" class="ax">${num(v, 1)}</text>`; });
+    rows.forEach((r, i) => {
+      const x = m.l + i * bw + bw * 0.18, w = bw * 0.64;
+      const good = r.liters - r.wasted_liters;
+      svg += `<g><title>${r.date}: ${num(r.liters, 2)} L, ${r.runs} lần tưới${r.wasted_liters ? `, ${num(r.wasted_liters, 2)} L không tới gốc` : ""}</title>`;
+      if (good > 0) svg += `<rect x="${x}" y="${y(good)}" width="${w}" height="${y(0) - y(good)}" rx="2" fill="var(--series-hum)"/>`;
+      if (r.wasted_liters > 0) svg += `<rect x="${x}" y="${y(r.liters)}" width="${w}" height="${y(good) - y(r.liters)}" rx="2" fill="var(--serious)"/>`;
+      svg += `</g>`;
+      if (rows.length <= 16 || i % 2 === 0) svg += `<text x="${x + w / 2}" y="${H - 8}" text-anchor="middle" class="ax">${r.date.slice(8)}/${r.date.slice(5, 7)}</text>`;
+    });
+    const line = (key, color, dash) => {
+      const pts = rows.map((r, i) => (r[key] == null ? null : `${m.l + i * bw + bw / 2},${y(r[key])}`));
+      let d = "", pen = false;
+      pts.forEach((p) => { if (p) { d += (pen ? "L" : "M") + p; pen = true; } else pen = false; });
+      return d ? `<path d="${d}" fill="none" stroke="${color}" stroke-width="2" ${dash ? 'stroke-dasharray="5 4"' : ""}/>` : "";
+    };
+    svg += line("liters_avg7", "var(--text-2)", true) + line("need_liters", "var(--series-flow)", false);
+    return svg + "</svg>";
+  }
+
+  async function renderWater(force = false) {
+    const box = $("#tab-water");
+    const d = device();
+    if (!d) { box.innerHTML = '<p class="muted">Chưa có thiết bị.</p>'; return; }
+    const tank = Number(store.get("agri.tank")) || null;
+    const key = `${d._id}|${S.waterDays || 14}|${tank}`;
+    if (force || waterCache.key !== key || Date.now() - waterCache.at > 30000) {
+      if (!waterCache.data || waterCache.key !== key) box.innerHTML = '<p class="muted small"><span class="spinner"></span> Đang chạy aggregation pipeline…</p>';
+      const q = `days=${S.waterDays || 14}${tank ? `&tank_liters=${tank}` : ""}`;
+      waterCache = { key, at: Date.now(), data: await api(`devices/${encodeURIComponent(d._id)}/water/daily?${q}`) };
+    }
+    const w = waterCache.data, s = w.summary, rows = w.rows;
+    const card = (label, value, unit, sub) => `<div class="kpi card"><div class="label">${label}</div><div class="value">${value}${unit ? `<small>${unit}</small>` : ""}</div><div class="sub">${sub || ""}</div></div>`;
+    const engine = w.engine === "mongodb-aggregation"
+      ? "tính bằng <b>MongoDB Aggregation Pipeline</b>"
+      : "chế độ chạy thử (mongomock) – tính bằng Python tương đương pipeline";
+    box.innerHTML = `
+      <p class="small muted">Nhà màng cần biết mỗi ngày dùng bao nhiêu nước, bao nhiêu nước không tới gốc và bể trữ còn đủ mấy ngày (mùa khô, xâm nhập mặn).
+        Báo cáo của <b>${esc(d._id)}</b>, ${engine} trên <code>irrigation_events</code> và <code>telemetry</code> (time series).</p>
+      <div class="grid kpis water-kpis">
+        ${card("Dự báo nước ngày mai", num(s.forecast_liters_per_day, 2), "L", s.forecast_method ? FORECAST_METHOD[s.forecast_method] : "chưa đủ dữ liệu để dự báo")}
+        ${card("Nước cần 7 ngày tới", num(s.forecast_liters_7d, 1), "L", "theo dự báo ở bên trái")}
+        <div class="kpi card"><div class="label">Bể trữ đủ dùng</div><div class="value">${s.tank_days != null ? num(s.tank_days, 1) : "–"}<small>ngày</small></div>
+          <div class="sub"><label>Dung tích bể <input id="tank-l" type="number" min="1" step="1" value="${tank || ""}" placeholder="lít" style="width:90px"> L</label></div></div>
+        ${card("7 ngày qua", num(s.liters_7d, 2), "L", `${s.runs_7d} lần tưới · ${s.bad_runs_7d} lần bất thường`)}
+        ${card("Nước không tới gốc (7 ngày)", num(s.wasted_liters_7d, 2), "L", s.wasted_pct_7d != null ? `${num(s.wasted_pct_7d, 1)}% tổng nước tưới – lần tưới có z-score âm` : "lần tưới có z-score âm")}
+        ${card("Tốc độ khô của đất (3 ngày)", num(s.drying_pct_per_hour_3d, 2), "%/giờ", s.baseline_pct_per_l != null ? `phản hồi đất đã học ${num(s.baseline_pct_per_l, 2)} %/L` : "chưa học xong phản hồi đất")}
+      </div>
+      <div class="water-chart">
+        <div class="water-legend small"><span><i style="background:var(--series-hum)"></i>Nước tới gốc</span><span><i style="background:var(--serious)"></i>Nước không tới gốc</span>
+          <span><i class="ln dash"></i>Trung bình 7 ngày trước</span><span><i class="ln" style="border-color:var(--series-flow)"></i>Nước cây cần (ước tính từ tốc độ khô)</span>
+          <span class="seg" id="water-days">${[7, 14, 30].map((n) => `<button data-wdays="${n}" class="${(S.waterDays || 14) === n ? "on" : ""}">${n} ngày</button>`).join("")}</span></div>
+        <div class="scroll">${waterBars(rows)}</div>
+      </div>
+      <div class="table-wrap"><table class="metrics water"><thead><tr><th>Ngày</th><th>Lần tưới</th><th>Bất thường</th><th>Nước (L)</th><th>Không tới gốc (L)</th>
+        <th>TB 7 ngày trước (L)</th><th>Luỹ kế (L)</th><th>Bơm (phút)</th><th>Tốc độ khô (%/giờ)</th><th>Cây cần (L, ước tính)</th><th>Nhiệt TB / max (°C)</th><th>Đất thấp nhất (%)</th></tr></thead>
+        <tbody>${rows.slice().reverse().map((r) => `<tr class="${r.bad_runs ? "warn" : ""}"><td>${r.date.slice(8)}/${r.date.slice(5, 7)}</td><td>${r.runs}</td><td>${r.bad_runs || ""}</td>
+          <td class="val">${num(r.liters, 2)}</td><td class="val">${r.wasted_liters ? num(r.wasted_liters, 2) : ""}</td><td class="val">${num(r.liters_avg7, 2)}</td>
+          <td class="val">${num(r.liters_cumulative, 2)}</td><td class="val">${num(r.pump_minutes, 1)}</td><td class="val">${num(r.drying_pct_per_hour, 2)}</td>
+          <td class="val">${num(r.need_liters, 2)}</td><td class="val">${num(r.temp_avg, 1)} / ${num(r.temp_max, 1)}</td><td class="val">${num(r.soil_min, 0)}</td></tr>`).join("")}</tbody></table></div>
+      <details class="pipeline"><summary class="small">Xem 2 pipeline MongoDB đã chạy ($dateTrunc · $densify · $fill · $setWindowFields · $derivative)</summary>
+        <p class="small muted">1) <code>irrigation_events</code> → số lần tưới, lít, lít không tới gốc theo ngày; trung bình 7 ngày trước, xu hướng, luỹ kế.
+        2) <code>telemetry</code> → độ dốc độ ẩm đất (%/giờ) mỗi 10 phút, bỏ 60 phút sau khi tưới, gom theo ngày.</p>
+        <pre>${esc(JSON.stringify(w.pipelines, null, 2))}</pre></details>`;
+  }
+  document.addEventListener("change", (ev) => {
+    if (ev.target.id === "tank-l") { store.set("agri.tank", ev.target.value || ""); renderWater(true).catch(console.warn); }
+  });
+  document.addEventListener("click", (ev) => {
+    const b = ev.target.closest("[data-wdays]");
+    if (b) { S.waterDays = Number(b.dataset.wdays); renderWater(true).catch(console.warn); }
+  });
+
   // ------------------------------------------------------------------ data loops
   async function refresh() {
     try {
@@ -512,6 +602,7 @@
       renderTabs(); renderBanner(); renderKpis(); renderActuator("pump"); renderActuator("mist"); renderIncidents();
       if (S.tab === "commands") renderCommands();
       if (S.tab === "metrics") renderMetrics();
+      if (S.tab === "water" && document.activeElement?.id !== "tank-l" && Date.now() - waterCache.at > 60000) renderWater().catch(console.warn);
     } catch (e) {
       $("#sys-status").textContent = "Mất kết nối máy chủ";
     }

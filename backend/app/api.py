@@ -10,6 +10,7 @@ from typing import Literal, Optional
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from .analytics import water_report
 from .commands import commands
 from .config import settings
 from .db import DEFAULT_SETTINGS, db, deep_merge, utcnow
@@ -240,6 +241,14 @@ async def device_irrigation(device_id: str, limit: int = Query(30, le=200)):
         baseline = {"median_pct_per_l": round(med, 2), "scale": round(scale, 2), "n": len(ratios)}
     return {"device_id": device_id, "baseline": baseline, "learning_needed": max(
         0, int(cfg["irrigation"]["min_baseline_events"]) - len(ratios)), "events": events}
+
+
+@router.get("/devices/{device_id}/water/daily")
+async def water_daily(device_id: str, days: int = Query(14, ge=1, le=90),
+                      tank_liters: Optional[float] = Query(None, gt=0, le=1_000_000)):
+    """Báo cáo nước theo ngày (MongoDB Aggregation Pipeline): lít, số lần tưới, nước lãng phí, tốc độ khô,
+    trung bình 7 ngày, dự báo lít/ngày và số ngày bể trữ còn đủ. Trả kèm 2 pipeline đã chạy."""
+    return await water_report(device_id, days, tank_liters)
 
 
 @router.get("/devices/{device_id}/events")

@@ -45,7 +45,7 @@ Mỗi sự cố có dòng thời gian để điều tra. Khi người vận hàn
 ### Logic điều khiển tự động (`backend/app/control.py`)
 - **Bơm** (tưới gốc, dựa chủ yếu vào đất):
   - BẬT khi đất < `soil_dry_pct` (35%). Ngày nóng (> 30°C) thì tưới sớm hơn: BẬT khi đất < trung bình hai ngưỡng (47.5%).
-  - TẮT khi đất ≥ `soil_target_pct` (60%) hoặc chạy quá `max_minutes`.
+  - TẮT khi đất ≥ `soil_target_pct` (60%) hoặc chạy quá `max_seconds`.
   - Nghỉ tối thiểu `min_off_minutes` giữa hai lần bật.
 - **Phun sương** (hạ nhiệt, tăng ẩm không khí):
   - BẬT khi trời nóng hoặc độ ẩm không khí < 50%, với điều kiện độ ẩm < 85%.
@@ -110,7 +110,7 @@ Index phụ: `{meta.device_id: 1, ts: -1}`.
 **`settings`** – ngưỡng do admin chỉnh trên web (`_id` = site; có `updated_by`, `updated_at`)
 ```json
 { "_id": "farm-a",
-  "pump":   { "soil_dry_pct": 35, "soil_target_pct": 60, "hot_temp_c": 30, "max_minutes": 10, "min_off_minutes": 5,
+  "pump":   { "soil_dry_pct": 35, "soil_target_pct": 60, "hot_temp_c": 30, "max_seconds": 600, "min_off_minutes": 5,
               "min_flow_lpm": 0.3, "dry_run_seconds": 60, "leak_seconds": 15 },
   "mist":   { "hot_temp_c": 30, "temp_hysteresis_c": 1, "air_dry_pct": 50, "air_target_pct": 75, "air_max_pct": 85,
               "max_minutes": 15, "min_off_minutes": 3, "check_minutes": 5, "min_rise_pct": 3 },
@@ -177,6 +177,44 @@ MongoDB, tính độ lệch thống kê bền vững rồi gửi `irrigation.res
 - Thống kê hôm nay (theo giờ Việt Nam): lít nước đã tưới (tích phân `flow_lpm`), số phút bơm chạy, số phút phun sương, min/max nhiệt độ.
 - MTTD/MTTR theo loại sự cố: `$group` trên `incidents` đã `resolved`.
 
+### Báo cáo nước theo ngày – Aggregation Pipeline (`backend/app/analytics.py`, tab web “Báo cáo nước”)
+
+**Bài toán:** nhà màng / trang trại cần biết mỗi ngày dùng bao nhiêu nước, tưới mấy lần, bao nhiêu nước **không tới gốc**
+(lãng phí) và đất khô nhanh cỡ nào, để lập kế hoạch nước (bể trữ còn đủ mấy ngày trong mùa khô, xâm nhập mặn), phát hiện
+luống tốn nước bất thường và có nhật ký tưới làm bằng chứng (VietGAP / GlobalGAP).
+API: `GET /api/devices/{id}/water/daily?days=14&tank_liters=200` – trả về số liệu từng ngày, phần tóm tắt và **chính 2 pipeline đã chạy**.
+
+**Pipeline 1 – `irrigation_events` → theo ngày** (dùng index `{device_id, ended_at}`):
+
+| Stage | Việc làm |
+|---|---|
+| `$match` | thiết bị, khoảng ngày (0h giờ VN) |
+| `$group` + `$dateTrunc` (`timezone: "+07:00"`) | số lần tưới, lần bình thường / bất thường, lít, **lít không tới gốc** (lần `low_response`), phút bơm, %/L trung bình |
+| `$densify` + `$fill` | ngày không tưới vẫn có dòng = 0, để trung bình 7 ngày không bị lệch |
+| `$setWindowFields` | `$avg` 7 ngày **trước** (cửa sổ `[-7, -1]`) = dự báo ngày mai; `$derivative` xu hướng lít/ngày; `$sum` luỹ kế |
+
+**Pipeline 2 – `telemetry` (time series) → tốc độ khô theo ngày:**
+
+| Stage | Việc làm |
+|---|---|
+| `$match` | thiết bị, khoảng ngày, chỉ bản tin cảm biến đất hợp lệ |
+| `$group` khung 10 phút (`$dateTrunc` `binSize: 10`) | độ ẩm đất TB, nhiệt độ TB/max, có tưới / có phun trong khung |
+| `$setWindowFields` | `$derivative` độ ẩm đất theo **giờ** trong 30 phút (`range`, `unit: minute`); `$max` “có tưới” trong 60 phút trước |
+| `$group` theo ngày | TB độ dốc **chỉ ở các khung không tưới / không phun** (nước còn đang thấm thì bỏ) → tốc độ khô %/giờ, nhiệt độ, độ ẩm đất thấp nhất |
+
+**Kết hợp hai pipeline** (backend): nước cây cần (ước tính) = tốc độ khô × 24 ÷ phản hồi đất đã học (%/L);
+dự báo ngày mai = TB 7 ngày trước nếu đã có ≥ 3 ngày tưới, nếu chưa thì dùng ước tính từ tốc độ khô;
+số ngày bể trữ đủ dùng = dung tích bể ÷ dự báo.
+
+Cần MongoDB ≥ 5.3 (`$densify`, `$fill`, `$setWindowFields`); Atlas hiện dùng 7.x/8.x.
+Chế độ chạy thử `memory://` (mongomock) không có các stage này nên dùng hàm Python tương đương (`_py_*`, có unit test).
+Kiểm tra pipeline trên MongoDB thật cho cùng kết quả với Python (CSDL tạm, tự xoá sau khi chạy):
+
+```bash
+docker compose exec backend python -m app.check_water_report            # so pipeline với Python trên 14 ngày giả lập
+docker compose exec backend python -m app.check_water_report --explain sim-01   # pipeline có dùng index không
+```
+
 ## 4. Datadog observability
 
 ### Custom metrics (DogStatsD, tiền tố `agriguard.`)
@@ -228,7 +266,7 @@ Ngoài custom metrics còn có:
 | Pipeline chậm | `avg(last_5m): ingest.latency_ms.95percentile > 5000` | `ingest_latency` |
 | Nước tưới không tới gốc | `min(last_5m): irrigation.response_zscore by device_id <= -3` | `irrigation_ineffective` |
 | Đất ẩm lên bất thường | `max(last_5m): irrigation.response_zscore by device_id >= 3` | `soil_response_high` |
-| Dự báo cây sắp thiếu nước (**forecast**) | `min(next_2h): forecast(soil.moisture, 'linear', 1, model='reactive') <= 25` | (cảnh báo sớm) |
+| Dự báo cây sắp thiếu nước (**forecast**) | `min(next_12h): forecast(soil.moisture, 'linear', 1, model='reactive') <= 25` | (cảnh báo sớm) |
 | Dự báo ESP32 cạn bộ nhớ (**forecast**) | `min(next_1d): forecast(device.free_heap, 'linear', 1) <= 20000` | (cảnh báo sớm) |
 | Lượng nước tưới bất thường (**anomaly**) | `anomalies(sum: flow.volume_ml by device_id, 'basic', 3)` | (chỉ thông báo) |
 | Độ trễ ack bất thường (**anomaly**) | `anomalies(avg: command.ack_latency_ms, 'basic', 3)` | (chỉ thông báo) |
@@ -244,7 +282,7 @@ về `/api/webhooks/datadog`. Backend mở hoặc gộp incident, lưu link moni
 |---|---|---|
 | **Anomaly detection (thống kê riêng)** | backend `irrigation.py` + MongoDB `irrigation_events` | robust z-score của phản hồi đất trên mỗi lít, học theo từng luống |
 | **Anomaly detection (Datadog)** | `anomalies()` trong 3 monitor + widget | lượng nước tưới, độ trễ ack, lượng bản tin MQTT lệch khỏi dải bình thường |
-| **Forecast (Datadog)** | `forecast()` trong 2 monitor + widget | đất sẽ khô dưới 25% trong 2 giờ (tức tưới tự động đang không chạy), heap ESP32 sẽ cạn |
+| **Forecast (Datadog)** | `forecast()` trong 2 monitor + widget | đất sẽ khô dưới 25% trong 12 giờ tới (tức tưới tự động đang không chạy), heap ESP32 sẽ cạn |
 | **Prediction (backend)** | `backend/app/prediction.py` | bao lâu nữa đất khô tới ngưỡng tưới, cần bao nhiêu lít/ngày và cho lần tưới tới; hiện trên web và gửi Datadog |
 | **Bits AI (Datadog)** | giao diện Datadog | điều tra nguyên nhân khi monitor báo động (xem dưới) |
 
