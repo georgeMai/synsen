@@ -335,7 +335,7 @@
       ["min_off_minutes", "Nghỉ tối thiểu (phút)"], ["check_minutes", "Kiểm tra hiệu quả sau (phút)"], ["min_rise_pct", "Độ ẩm phải tăng ít nhất (%)"],
       ["verify_rise_pct", "Kiểm chứng: độ ẩm tăng ít nhất (%)"], ["verify_temp_drop_c", "Kiểm chứng: HOẶC nhiệt độ giảm ít nhất (°C)"]]],
     irrigation: ["Phản hồi đất / lít nước", [["settle_seconds", "Chờ nước thấm sau khi tắt bơm (giây)"], ["before_seconds", "Lấy độ ẩm “trước” trong (giây)"], ["after_window_seconds", "Lấy độ ẩm “sau” trong (giây)"], ["min_baseline_events", "Số lần tưới để học mức bình thường"],
-      ["baseline_events", "Số lần tưới gần nhất dùng làm chuẩn"], ["zscore_threshold", "Ngưỡng bất thường |z|"], ["min_liters", "Lượng nước tối thiểu để đánh giá (L)"],
+      ["baseline_events", "Số lần tưới gần nhất dùng làm chuẩn"], ["zscore_threshold", "Ngưỡng bất thường |z|"], ["detect_high_response", "Cảnh báo “đất ẩm lên bất thường” (z dương)", "bool"], ["min_liters", "Lượng nước tối thiểu để đánh giá (L)"],
       ["max_start_soil_pct", "Không đánh giá khi đất đã ẩm hơn (%)"], ["test_seconds", "Tưới thử khi kiểm chứng (giây)"]]],
     health: ["Giám sát", [["offline_after_s", "Coi là offline sau (giây)"], ["stuck_minutes", "Cảm biến đơ sau (phút)"], ["sensor_fail_count", "Số lần đọc lỗi liên tiếp"], ["rssi_weak_dbm", "Wi‑Fi yếu dưới (dBm)"],
       ["low_flow_ratio", "Báo bơm yếu khi lưu lượng < (× mức đã học)"]]],
@@ -349,7 +349,9 @@
     const s = S.settings;
     if (!s) return;
     $("#tab-settings").innerHTML = `<form id="settings-form"><div class="settings">${Object.entries(SETTING_FIELDS).map(([grp, [title, fields]]) => `
-      <fieldset><legend>${title}</legend>${fields.map(([k, label]) => `<label>${label}<input type="number" step="any" name="${grp}.${k}" value="${s[grp][k]}"></label>`).join("")}</fieldset>`).join("")}</div>
+      <fieldset><legend>${title}</legend>${fields.map(([k, label, type]) => type === "bool"
+        ? `<label>${label}<select name="${grp}.${k}"><option value="1" ${s[grp][k] ? "selected" : ""}>Bật</option><option value="0" ${s[grp][k] ? "" : "selected"}>Tắt (chậu nhỏ, đất ẩm lên nhanh)</option></select></label>`
+        : `<label>${label}<input type="number" step="any" name="${grp}.${k}" value="${s[grp][k]}"></label>`).join("")}</fieldset>`).join("")}</div>
       <div class="row" style="margin-top:12px;display:flex;gap:8px;align-items:center"><button class="primary" type="submit">Lưu cài đặt</button>
       <span class="muted small">Áp dụng ngay cho bộ điều khiển tự động và luật phát hiện sự cố.</span></div></form>`;
   }
@@ -808,7 +810,7 @@
     if (ev.target.id !== "settings-form") return;
     ev.preventDefault();
     const body = {};
-    new FormData(ev.target).forEach((v, k) => { const [g, f] = k.split("."); (body[g] ||= {})[f] = Number(v); });
+    new FormData(ev.target).forEach((v, k) => { const [g, f] = k.split("."); (body[g] ||= {})[f] = f === "detect_high_response" ? v === "1" : Number(v); });
     try {
       S.settings = await put("settings", body);
       toast("Đã lưu cài đặt"); renderKpis(); loadCharts();

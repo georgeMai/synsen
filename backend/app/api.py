@@ -112,6 +112,7 @@ class IrrigationSettings(BaseModel):
     baseline_events: Optional[int] = Field(None, ge=3, le=200)
     min_baseline_events: Optional[int] = Field(None, ge=2, le=100)
     zscore_threshold: Optional[float] = Field(None, ge=1, le=10)
+    detect_high_response: Optional[bool] = None
     test_seconds: Optional[int] = Field(None, ge=2, le=300)   # chậu demo nhỏ: 3–4 giây
 
 

@@ -49,6 +49,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "baseline_events": 20,     # số lần tưới gần nhất dùng để học mức bình thường
         "min_baseline_events": 5,  # chưa đủ -> trạng thái "learning"
         "zscore_threshold": 3,     # |z| ≥ ngưỡng -> bất thường
+        # Cảnh báo "đất ẩm lên bất thường" (z ≥ ngưỡng): chậu demo ít đất ẩm lên rất nhanh và dao động mạnh
+        # -> mặc định TẮT; lần tưới đó được tính là bình thường (vẫn học vào mức chuẩn). Luống thật: bật lại.
+        "detect_high_response": False,
         "test_seconds": 4,         # thời gian tưới thử (chậu demo; luống thật: 15) khi kiểm chứng khắc phục
     },
     "health": {

@@ -188,12 +188,13 @@ MONITORS = [
     ),
     _monitor(
         "Đất ẩm lên bất thường so với lượng nước",
-        "max(last_5m):max:agriguard.irrigation.response_zscore{*} by {device_id} >= 3",
+        # theo luật backend (fault.active) để tôn trọng cài đặt irrigation.detect_high_response (chậu nhỏ: tắt)
+        "max(last_5m):max:agriguard.fault.active{fault:soil_response_high} by {device_id} >= 1",
         "soil_response_high", 3,
         _msg("Đất phản hồi quá mạnh so với lượng nước",
              "`agriguard.irrigation.response_pct_per_liter` cao bất thường so với baseline.",
              "Kiểm tra cảm biến đất có bị đọng nước / cắm sát đầu tưới không."),
-        critical=3, warning=2,
+        critical=1,
     ),
     # ---------------- Forecast (Datadog dự báo xu hướng) ----------------
     _monitor(

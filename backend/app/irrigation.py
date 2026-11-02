@@ -117,8 +117,10 @@ def assess(run: IrrigationRun, soil_after: Optional[float], history: list[float]
     out.update(baseline_pct_per_l=round(med, 2), baseline_n=len(usable), zscore=round(z, 2))
     if z <= -c["zscore_threshold"]:
         out["status"], out["reason"] = "low_response", "water_not_reaching_roots"
-    elif z >= c["zscore_threshold"]:
+    elif z >= c["zscore_threshold"] and c.get("detect_high_response", True):
         out["status"], out["reason"] = "high_response", "response_too_high"
+    elif z >= c["zscore_threshold"]:
+        out["status"], out["reason"] = "normal", "high_response_ignored"   # cảnh báo đã tắt trong Cài đặt
     else:
         out["status"] = "normal"
     return out

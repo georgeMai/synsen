@@ -291,7 +291,7 @@
   {
     "name": "[AgriGuard] Đất ẩm lên bất thường so với lượng nước",
     "type": "query alert",
-    "query": "max(last_5m):max:agriguard.irrigation.response_zscore{*} by {device_id} >= 3",
+    "query": "max(last_5m):max:agriguard.fault.active{fault:soil_response_high} by {device_id} >= 1",
     "message": "{{#is_alert}}🚨 **Đất phản hồi quá mạnh so với lượng nước** trên `{{device_id.name}}`\n\n**Điều tra:** `agriguard.irrigation.response_pct_per_liter` cao bất thường so với baseline.\n\n**Khắc phục:** Kiểm tra cảm biến đất có bị đọng nước / cắm sát đầu tưới không.{{/is_alert}}\n{{#is_recovery}}✅ Đất phản hồi quá mạnh so với lượng nước – tín hiệu đã trở lại bình thường. Xác nhận khắc phục trên web AgriGuard để hệ thống kiểm chứng và đóng sự cố.{{/is_recovery}}\n\nDashboard: AgriGuard – IoT Irrigation Operations @webhook-agriguard",
     "priority": 3,
     "tags": [
@@ -306,8 +306,7 @@
       "notify_no_data": false,
       "renotify_interval": 0,
       "thresholds": {
-        "critical": 3,
-        "warning": 2
+        "critical": 1
       }
     }
   },
