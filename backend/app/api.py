@@ -10,6 +10,7 @@ from typing import Literal, Optional
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from . import ai
 from .analytics import water_report
 from .commands import commands
 from .config import settings
@@ -46,7 +47,7 @@ class CommandIn(BaseModel):
 
 
 class ModeIn(BaseModel):
-    mode: Literal["AUTO", "MANUAL", "OFF"]
+    mode: Literal["AUTO", "AI", "MANUAL", "OFF"]
 
 
 class NoteIn(BaseModel):
@@ -75,6 +76,8 @@ class MistSettings(BaseModel):
     min_off_minutes: float = Field(ge=0, le=240)
     check_minutes: float = Field(ge=1, le=60)
     min_rise_pct: float = Field(ge=0.5, le=30)
+    verify_rise_pct: Optional[float] = Field(None, ge=0.5, le=30)
+    verify_temp_drop_c: Optional[float] = Field(None, ge=0.2, le=10)
 
 
 class HealthSettings(BaseModel):
@@ -82,6 +85,21 @@ class HealthSettings(BaseModel):
     stuck_minutes: float = Field(ge=2, le=15)
     sensor_fail_count: int = Field(ge=1, le=20)
     rssi_weak_dbm: int = Field(ge=-100, le=-40)
+    low_flow_ratio: Optional[float] = Field(None, ge=0.2, le=0.95)
+
+
+class AiSettings(BaseModel):
+    horizon_hours: Optional[float] = Field(None, ge=1, le=24)
+    step_minutes: Optional[int] = Field(None, ge=5, le=30)
+    train_days: Optional[float] = Field(None, ge=1, le=30)
+    min_samples: Optional[int] = Field(None, ge=10, le=2000)
+    ridge_lambda: Optional[float] = Field(None, ge=0, le=100)
+    retrain_hours: Optional[float] = Field(None, ge=0.5, le=168)
+    plan_interval_s: Optional[int] = Field(None, ge=60, le=3600)
+    plan_margin_pct: Optional[float] = Field(None, ge=0, le=30)
+    stress_weight: Optional[float] = Field(None, ge=0, le=10)
+    evap_penalty: Optional[float] = Field(None, ge=0, le=2)
+    critical_margin_pct: Optional[float] = Field(None, ge=0, le=30)
 
 
 class IrrigationSettings(BaseModel):
@@ -102,11 +120,12 @@ class SettingsIn(BaseModel):
     mist: Optional[MistSettings] = None
     health: Optional[HealthSettings] = None
     irrigation: Optional[IrrigationSettings] = None
+    ai: Optional[AiSettings] = None
 
 
 class FaultIn(BaseModel):
     fault: Literal["dry_run", "leak", "dht_fail", "soil_disconnect", "soil_stuck", "offline", "mist_empty",
-                   "no_ack", "brownout", "slow_network", "hose_off", "dry_soil", "clear"]
+                   "no_ack", "brownout", "slow_network", "hose_off", "clog", "dry_soil", "clear"]
     on: bool = True
 
 
@@ -251,6 +270,39 @@ async def water_daily(device_id: str, days: int = Query(14, ge=1, le=90),
     return await water_report(device_id, days, tank_liters)
 
 
+@router.get("/devices/{device_id}/ai")
+async def device_ai(device_id: str):
+    """AI tưới: dự báo độ ẩm đất 6 giờ, lịch tưới tối ưu, nguy cơ, mô hình và độ tin cậy (sai số thực tế)."""
+    dev = await db.devices.find_one({"_id": device_id}, {"ai": 1, "actuators": 1})
+    if not dev:
+        raise HTTPException(404, "Không tìm thấy thiết bị")
+    last = await db.forecasts.find({"device_id": device_id}).sort("created_at", -1).limit(1).to_list(1)
+    since = utcnow() - timedelta(hours=24)
+    errors = await db.forecasts.find({"device_id": device_id, "created_at": {"$gte": since}, "error_1h": {"$ne": None}},
+                                     {"created_at": 1, "soil_1h": 1, "actual_1h": 1, "error_1h": 1, "method": 1}
+                                     ).sort("created_at", 1).to_list(500)
+    models = await db.models.find({"device_id": device_id}, {"model": 0}).sort("trained_at", -1).limit(8).to_list(8)
+    hist = await db.telemetry.find({"meta.device_id": device_id, "ts": {"$gte": utcnow() - timedelta(hours=2)},
+                                    "soil_ok": True}, {"_id": 0, "ts": 1, "soil_moisture_pct": 1, "pump_on": 1}
+                                   ).sort("ts", 1).to_list(5000)
+    step = max(1, len(hist) // 120)
+    end = utcnow()
+    return {"device_id": device_id, "ai": dev.get("ai") or {}, "mode": (dev.get("actuators") or {}).get("pump", {}).get("mode"),
+            "forecast": last[0] if last else None, "errors": errors, "models": models,
+            "history": [{"t": h["ts"], "soil": h["soil_moisture_pct"], "pump_on": h.get("pump_on")} for h in hist[::step]],
+            "change_streams": db.change_streams,
+            "pipelines": {"features": ai.feature_pipeline(device_id, end - timedelta(days=7), end),
+                          "weather_profile": ai.profile_pipeline(device_id, end - timedelta(days=7))}}
+
+
+@router.post("/devices/{device_id}/ai/train")
+async def device_ai_train(device_id: str, actor: str = Depends(require_admin)):
+    """Học lại mô hình ngay (ngoài lần học tự động sau mỗi lần tưới / định kỳ)."""
+    doc = await ai.retrain(device_id, "manual")
+    await audit("ai_train", actor, device_id=device_id, model_id=doc["_id"], status=doc["status"])
+    return {k: v for k, v in doc.items() if k != "model"}
+
+
 @router.get("/devices/{device_id}/events")
 async def device_events(device_id: str, limit: int = Query(50, le=500)):
     return await db.events.find({"device_id": device_id}, {"_id": 0}).sort("ts", -1).limit(limit).to_list(limit)
@@ -264,7 +316,7 @@ async def send_command(device_id: str, actuator: Literal["pump", "mist"], body: 
     if not device:
         raise HTTPException(404, "Không tìm thấy thiết bị")
     # Bật/tắt bằng tay -> chuyển sang MANUAL để bộ điều khiển tự động không ghi đè
-    if body.action in ("on", "off") and (device.get("actuators", {}).get(actuator, {}).get("mode") == "AUTO"):
+    if body.action in ("on", "off") and (device.get("actuators", {}).get(actuator, {}).get("mode") in ("AUTO", "AI")):
         await db.devices.update_one({"_id": device_id}, {"$set": {f"actuators.{actuator}.mode": "MANUAL"}})
     duration = body.duration_s
     if actuator == "pump" and body.action == "on":
@@ -280,6 +332,8 @@ async def send_command(device_id: str, actuator: Literal["pump", "mist"], body: 
 @router.put("/devices/{device_id}/actuators/{actuator}/mode")
 async def set_mode(device_id: str, actuator: Literal["pump", "mist"], body: ModeIn,
                    actor: str = Depends(require_admin)):
+    if body.mode == "AI" and actuator != "pump":
+        raise HTTPException(400, "Chế độ AI chỉ áp dụng cho máy bơm")
     res = await db.devices.update_one({"_id": device_id}, {"$set": {f"actuators.{actuator}.mode": body.mode}})
     if not res.matched_count:
         raise HTTPException(404, "Không tìm thấy thiết bị")

@@ -6,7 +6,7 @@ import logging
 
 from .commands import commands
 from .config import settings
-from .control import decide_mist, decide_pump
+from .control import decide_mist, decide_pump, decide_pump_ai, idle_reason
 from .db import as_utc, db, utcnow
 from .incidents import incidents
 from .irrigation import ASSESSED
@@ -18,7 +18,7 @@ from .state import runtime
 log = logging.getLogger(__name__)
 
 # Loại sự cố mà luật backend tự phát hiện (để đánh dấu "điều kiện lỗi đã hết")
-RULE_TYPES = {"device_offline", "pump_dry_run", "flow_without_pump", "pump_overrun", "mist_overrun",
+RULE_TYPES = {"device_offline", "pump_dry_run", "pump_low_flow", "flow_without_pump", "pump_overrun", "mist_overrun",
               "mist_ineffective", "dht_fault", "soil_sensor_fault", "soil_sensor_stuck",
               "irrigation_ineffective", "soil_response_high"}
 
@@ -110,32 +110,57 @@ async def control_tick() -> None:
     devices = {d["_id"]: d async for d in db.devices.find({}, {"actuators": 1, "online": 1})}
 
     for rt in runtime.all():
+        status: dict[str, dict] = {}
         if not rt.online or rt.latest is None:
-            continue
-        if (now - rt.latest.ts).total_seconds() > cfg["health"]["offline_after_s"]:
-            continue
-        actuators = (devices.get(rt.device_id) or {}).get("actuators", {})
-        for actuator, decide in (("pump", decide_pump), ("mist", decide_mist)):
-            mode = (actuators.get(actuator) or {}).get("mode", "AUTO")
-            is_on = getattr(rt.latest, f"{actuator}_on")
-            blocked, verifying = _blocking(active, rt.device_id, actuator)
-            if verifying or mode == "MANUAL":
-                continue
-            if await commands.has_pending(rt.device_id, actuator):
-                continue
-            decision = None
-            if mode == "OFF" or blocked:
-                if is_on:
-                    reason = "mode_off" if mode == "OFF" else "incident_interlock"
-                    await commands.send(rt.device_id, actuator, "off", reason=reason, actor="controller", site=rt.site)
-                    metrics.increment("control.decision", tags={"actuator": actuator, "action": "off", "reason": reason})
-                continue
-            decision = decide(rt, cfg, now)
-            if decision:
-                await commands.send(rt.device_id, actuator, decision.action, duration_s=decision.duration_s,
-                                    reason=decision.reason, actor="controller", site=rt.site)
-                metrics.increment("control.decision", tags={"actuator": actuator, "action": decision.action,
-                                                             "reason": decision.reason, "device_id": rt.device_id})
+            status = {a: {"reason": "offline"} for a in ("pump", "mist")}
+        elif (now - rt.latest.ts).total_seconds() > cfg["health"]["offline_after_s"]:
+            status = {a: {"reason": "stale_data"} for a in ("pump", "mist")}
+        else:
+            actuators = (devices.get(rt.device_id) or {}).get("actuators", {})
+            for actuator, decide in (("pump", decide_pump), ("mist", decide_mist)):
+                status[actuator] = await _control_one(rt, cfg, now, active, actuators, actuator, decide)
+        # Lưu lý do để web hiển thị "vì sao chưa bật" (chỉ ghi khi đổi, tránh ghi MongoDB mỗi giây)
+        snapshot = {a: (v.get("reason"), str(v.get("start_at")), v.get("liters")) for a, v in status.items()}
+        if snapshot != getattr(rt, "_control_snapshot", None):
+            rt._control_snapshot = snapshot
+            await db.devices.update_one({"_id": rt.device_id},
+                                        {"$set": {f"control.{a}": {**v, "at": now} for a, v in status.items()}})
+
+
+async def _control_one(rt, cfg, now, active, actuators, actuator, decide) -> dict:
+    mode = (actuators.get(actuator) or {}).get("mode", "AUTO")
+    is_on = getattr(rt.latest, f"{actuator}_on")
+    blocked, verifying = _blocking(active, rt.device_id, actuator)
+    if verifying:
+        return {"reason": "verifying"}
+    if mode == "MANUAL":
+        return {"reason": "mode_manual"}
+    if await commands.has_pending(rt.device_id, actuator):
+        return {"reason": "pending_command"}
+    if mode == "OFF" or blocked:
+        if is_on:
+            reason = "mode_off" if mode == "OFF" else "incident_interlock"
+            await commands.send(rt.device_id, actuator, "off", reason=reason, actor="controller", site=rt.site)
+            metrics.increment("control.decision", tags={"actuator": actuator, "action": "off", "reason": reason})
+        if mode == "OFF":
+            return {"reason": "mode_off"}
+        types = sorted({i["type"] for i in active if i["device_id"] == rt.device_id
+                        and actuator in incident_type(i["type"]).blocks})
+        return {"reason": "incident_block", "incidents": types}
+    extra: dict = {}
+    if mode == "AI" and actuator == "pump":
+        decision, extra = decide_pump_ai(rt, cfg, now)
+    else:
+        decision = decide(rt, cfg, now)
+    if decision:
+        await commands.send(rt.device_id, actuator, decision.action, duration_s=decision.duration_s,
+                            reason=decision.reason, actor="controller", site=rt.site)
+        metrics.increment("control.decision", tags={"actuator": actuator, "action": decision.action,
+                                                     "reason": decision.reason, "device_id": rt.device_id})
+        return {"reason": f"decided_{decision.action}", "decision": decision.reason}
+    if extra:
+        return extra
+    return {"reason": idle_reason(actuator, rt, cfg, now)}
 
 
 async def run_forever(name: str, tick, interval_s: float) -> None:

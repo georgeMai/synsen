@@ -87,6 +87,17 @@ MONITORS = [
         critical=1,
     ),
     _monitor(
+        "Lưu lượng bơm giảm (tắc một phần / bơm yếu)",
+        # backend so lưu lượng mỗi lần bơm với mức bình thường đã học từ các lần tưới trước (rules.py, ai.py)
+        "max(last_1m):max:agriguard.fault.active{fault:pump_low_flow} by {device_id} >= 1",
+        "pump_low_flow", 2,
+        _msg("Lưu lượng bơm giảm so với mức đã học",
+             "So sánh `agriguard.flow.rate` khi bơm chạy với các lần trước (dashboard nhóm Bơm, nước); "
+             "log `Incident opened` có normal_flow_lpm và ratio.",
+             "Vệ sinh lưới lọc, kiểm tra ống gập/tắc, nguồn bơm; bấm “Đã xử lý” – hệ thống chạy thử bơm và đo lưu lượng."),
+        critical=1,
+    ),
+    _monitor(
         "Có dòng chảy khi bơm tắt (relay kẹt / rò)",
         "min(last_1m):max:agriguard.flow.rate{*} by {device_id} - max:agriguard.pump.state{*} by {device_id} * 10 > 0.3",
         "flow_without_pump", 1,
@@ -235,6 +246,47 @@ MONITORS = [
         _msg("Số bản tin MQTT nhận được bất thường", "So sánh `agriguard.mqtt.messages_received` theo kind.",
              "Kiểm tra thiết bị gửi trùng/thiếu.", webhook=False),
         critical=1, threshold_windows={"trigger_window": "last_15m", "recovery_window": "last_15m"},
+    ),
+    # ---- AI tưới: độ tin cậy mô hình + nguy cơ (ML model observability) ----
+    _monitor(
+        "Mô hình AI dự báo độ ẩm đất kém tin cậy",
+        # mỗi dự báo được đối chiếu với độ ẩm thật sau 1 giờ (ai.evaluate_forecasts) -> MAE trượt 24 giờ
+        "avg(last_1h):avg:agriguard.ml.forecast_mae{*} by {device_id} > 5",
+        "ai_model_unreliable", 3,
+        _msg("Mô hình AI dự báo sai nhiều (MAE 1 giờ > 5%)",
+             "Xem `agriguard.ml.forecast_error_abs` theo method, `ml.model.skill`, `ml.model.samples`; log "
+             "`AI model retrained` (n_samples, mae, baseline_mae). Sai số tăng đột ngột thường do cảm biến đất lệch, "
+             "thay đổi đất/chậu hoặc thời tiết khác hẳn dữ liệu đã học.",
+             "Kiểm tra cảm biến đất; bấm “Học lại ngay” trên tab AI tưới; tạm chuyển bơm về chế độ Tự động.",
+             webhook=False),
+        critical=5, warning=3,
+    ),
+    _monitor(
+        "Mô hình AI không được học lại",
+        "max(last_30m):max:agriguard.ml.model.age_hours{*} by {device_id} > 24",
+        "ai_model_stale", 4,
+        _msg("Mô hình AI quá 24 giờ chưa học lại",
+             "Xem log `AI model retrained` và `Change stream` của backend; kiểm tra `agriguard.engine.errors{loop:ai}`.",
+             "Khởi động lại backend hoặc bấm “Học lại ngay”.", webhook=False),
+        critical=24, warning=12,
+    ),
+    _monitor(
+        "Nguy cơ thiếu nước cao (AI dự báo)",
+        "min(last_15m):max:agriguard.ai.risk.water_shortage{*} by {device_id} >= 0.7",
+        "water_shortage_risk", 2,
+        _msg("AI dự báo đất sẽ xuống dưới ngưỡng khô mà bơm không tưới được",
+             "Xem `agriguard.ai.soil_forecast_6h`, `ai.minutes_to_dry`, chế độ bơm và sự cố đang khoá bơm.",
+             "Gỡ nguyên nhân khoá bơm (sự cố, chế độ Tắt hẳn) hoặc tưới thủ công.", webhook=False),
+        critical=0.7, warning=0.5,
+    ),
+    _monitor(
+        "Nguy cơ stress nhiệt cao (AI dự báo)",
+        "min(last_15m):max:agriguard.ai.risk.heat_stress{*} by {device_id} >= 0.7",
+        "heat_stress_risk", 3,
+        _msg("AI dự báo cây sắp bị stress nhiệt trong 6 giờ tới",
+             "Xem `agriguard.ai.risk.heat_stress`, nhiệt độ dự báo trên tab AI tưới, `agriguard.mist.state`.",
+             "Bật phun sương / che lưới; đảm bảo bơm ở chế độ AI hoặc Tự động để tưới trước giờ nóng.", webhook=False),
+        critical=0.7, warning=0.5,
     ),
     # Log monitor: dùng Datadog Logs (không phải metric) để bắt hành vi của NGƯỜI vận hành
     {
@@ -413,6 +465,28 @@ def dashboard(slo_ids: list[str] | None = None) -> dict:
                 _ts("Bộ nhớ trống ESP32 + dự báo",
                     f"min:agriguard.device.free_heap{d} by {{device_id}}",
                     f"forecast(min:agriguard.device.free_heap{d} by {{device_id}}, 'linear', 1)"),
+            ]),
+            _group("AI tưới – dự báo, lịch tưới & độ tin cậy mô hình", [
+                _ts("Độ ẩm đất thật vs AI dự báo (1 giờ / 6 giờ tới)",
+                    f"avg:agriguard.soil.moisture{d} by {{device_id}}",
+                    f"avg:agriguard.ai.soil_forecast_1h{d} by {{device_id}}",
+                    f"avg:agriguard.ai.soil_forecast_6h{d} by {{device_id}}"),
+                _ts("Sai số dự báo 1 giờ (|thật − dự báo|, %) và MAE 24 giờ",
+                    f"avg:agriguard.ml.forecast_error_abs{d} by {{method}}",
+                    f"avg:agriguard.ml.forecast_mae{d} by {{device_id}}"),
+                _qv("MAE kiểm định mô hình (%/giờ)", f"avg:agriguard.ml.model.validation_mae{d}", precision=2),
+                _qv("Kỹ năng so với trung bình (1 = hoàn hảo)", f"avg:agriguard.ml.model.skill{d}", precision=2),
+                _qv("Số mẫu huấn luyện", f"avg:agriguard.ml.model.samples{d}"),
+                _ts("Số lần học lại theo nguồn kích hoạt", "sum:agriguard.ml.retrains{*} by {trigger}.as_count()",
+                    display="bars"),
+                _ts("Lịch tưới AI: lít dự kiến & phút tới lần tưới",
+                    f"avg:agriguard.ai.plan.liters{d} by {{device_id}}",
+                    f"avg:agriguard.ai.plan.minutes_until{d} by {{device_id}}"),
+                _ts("Nguy cơ thiếu nước / stress nhiệt (0–1)",
+                    f"max:agriguard.ai.risk.water_shortage{d} by {{device_id}}",
+                    f"max:agriguard.ai.risk.heat_stress{d} by {{device_id}}"),
+                _ts("Quyết định của bộ điều khiển AI",
+                    "sum:agriguard.control.decision{actuator:pump} by {reason}.as_count()", display="bars"),
             ]),
             _group("Sức khoẻ thiết bị", [
                 _ts("Wi‑Fi RSSI (dBm)", f"avg:agriguard.device.rssi{d} by {{device_id}}"),

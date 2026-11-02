@@ -73,6 +73,13 @@ class CommandService:
         if late:
             update["late_ack"] = True
         await db.commands.update_one({"_id": cid}, {"$set": update})
+        if ok and data.get("state") in ("on", "off") and cmd.get("actuator") in ("pump", "mist"):
+            # Ack mang trạng thái thật của relay -> web thấy ngay, không chờ bản tin telemetry kế tiếp
+            act = cmd["actuator"]
+            state = {f"actuators.{act}.state": data["state"]}
+            if "lockout" in data:
+                state[f"actuators.{act}.lockout"] = bool(data["lockout"])
+            await db.devices.update_one({"_id": device_id}, {"$set": state})
         tags = {"device_id": device_id, "actuator": cmd["actuator"], "action": cmd["action"]}
         metrics.histogram("command.ack_latency_ms", latency_ms, tags=tags)
         metrics.increment("command.acked" if ok else "command.rejected", tags=tags)

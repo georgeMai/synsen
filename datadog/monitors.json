@@ -45,6 +45,28 @@
     }
   },
   {
+    "name": "[AgriGuard] Lưu lượng bơm giảm (tắc một phần / bơm yếu)",
+    "type": "query alert",
+    "query": "max(last_1m):max:agriguard.fault.active{fault:pump_low_flow} by {device_id} >= 1",
+    "message": "{{#is_alert}}🚨 **Lưu lượng bơm giảm so với mức đã học** trên `{{device_id.name}}`\n\n**Điều tra:** So sánh `agriguard.flow.rate` khi bơm chạy với các lần trước (dashboard nhóm Bơm, nước); log `Incident opened` có normal_flow_lpm và ratio.\n\n**Khắc phục:** Vệ sinh lưới lọc, kiểm tra ống gập/tắc, nguồn bơm; bấm “Đã xử lý” – hệ thống chạy thử bơm và đo lưu lượng.{{/is_alert}}\n{{#is_recovery}}✅ Lưu lượng bơm giảm so với mức đã học – tín hiệu đã trở lại bình thường. Xác nhận khắc phục trên web AgriGuard để hệ thống kiểm chứng và đóng sự cố.{{/is_recovery}}\n\nDashboard: AgriGuard – IoT Irrigation Operations @webhook-agriguard",
+    "priority": 2,
+    "tags": [
+      "app:agriguard",
+      "incident_type:pump_low_flow",
+      "team:agriguard"
+    ],
+    "options": {
+      "notify_audit": false,
+      "include_tags": true,
+      "require_full_window": false,
+      "notify_no_data": false,
+      "renotify_interval": 0,
+      "thresholds": {
+        "critical": 1
+      }
+    }
+  },
+  {
     "name": "[AgriGuard] Có dòng chảy khi bơm tắt (relay kẹt / rò)",
     "type": "query alert",
     "query": "min(last_1m):max:agriguard.flow.rate{*} by {device_id} - max:agriguard.pump.state{*} by {device_id} * 10 > 0.3",
@@ -410,6 +432,98 @@
       "threshold_windows": {
         "trigger_window": "last_15m",
         "recovery_window": "last_15m"
+      }
+    }
+  },
+  {
+    "name": "[AgriGuard] Mô hình AI dự báo độ ẩm đất kém tin cậy",
+    "type": "query alert",
+    "query": "avg(last_1h):avg:agriguard.ml.forecast_mae{*} by {device_id} > 5",
+    "message": "{{#is_alert}}🚨 **Mô hình AI dự báo sai nhiều (MAE 1 giờ > 5%)** trên `{{device_id.name}}`\n\n**Điều tra:** Xem `agriguard.ml.forecast_error_abs` theo method, `ml.model.skill`, `ml.model.samples`; log `AI model retrained` (n_samples, mae, baseline_mae). Sai số tăng đột ngột thường do cảm biến đất lệch, thay đổi đất/chậu hoặc thời tiết khác hẳn dữ liệu đã học.\n\n**Khắc phục:** Kiểm tra cảm biến đất; bấm “Học lại ngay” trên tab AI tưới; tạm chuyển bơm về chế độ Tự động.{{/is_alert}}\n{{#is_recovery}}✅ Mô hình AI dự báo sai nhiều (MAE 1 giờ > 5%) – tín hiệu đã trở lại bình thường. Xác nhận khắc phục trên web AgriGuard để hệ thống kiểm chứng và đóng sự cố.{{/is_recovery}}\n\nDashboard: AgriGuard – IoT Irrigation Operations ",
+    "priority": 3,
+    "tags": [
+      "app:agriguard",
+      "incident_type:ai_model_unreliable",
+      "team:agriguard"
+    ],
+    "options": {
+      "notify_audit": false,
+      "include_tags": true,
+      "require_full_window": false,
+      "notify_no_data": false,
+      "renotify_interval": 0,
+      "thresholds": {
+        "critical": 5,
+        "warning": 3
+      }
+    }
+  },
+  {
+    "name": "[AgriGuard] Mô hình AI không được học lại",
+    "type": "query alert",
+    "query": "max(last_30m):max:agriguard.ml.model.age_hours{*} by {device_id} > 24",
+    "message": "{{#is_alert}}🚨 **Mô hình AI quá 24 giờ chưa học lại** trên `{{device_id.name}}`\n\n**Điều tra:** Xem log `AI model retrained` và `Change stream` của backend; kiểm tra `agriguard.engine.errors{loop:ai}`.\n\n**Khắc phục:** Khởi động lại backend hoặc bấm “Học lại ngay”.{{/is_alert}}\n{{#is_recovery}}✅ Mô hình AI quá 24 giờ chưa học lại – tín hiệu đã trở lại bình thường. Xác nhận khắc phục trên web AgriGuard để hệ thống kiểm chứng và đóng sự cố.{{/is_recovery}}\n\nDashboard: AgriGuard – IoT Irrigation Operations ",
+    "priority": 4,
+    "tags": [
+      "app:agriguard",
+      "incident_type:ai_model_stale",
+      "team:agriguard"
+    ],
+    "options": {
+      "notify_audit": false,
+      "include_tags": true,
+      "require_full_window": false,
+      "notify_no_data": false,
+      "renotify_interval": 0,
+      "thresholds": {
+        "critical": 24,
+        "warning": 12
+      }
+    }
+  },
+  {
+    "name": "[AgriGuard] Nguy cơ thiếu nước cao (AI dự báo)",
+    "type": "query alert",
+    "query": "min(last_15m):max:agriguard.ai.risk.water_shortage{*} by {device_id} >= 0.7",
+    "message": "{{#is_alert}}🚨 **AI dự báo đất sẽ xuống dưới ngưỡng khô mà bơm không tưới được** trên `{{device_id.name}}`\n\n**Điều tra:** Xem `agriguard.ai.soil_forecast_6h`, `ai.minutes_to_dry`, chế độ bơm và sự cố đang khoá bơm.\n\n**Khắc phục:** Gỡ nguyên nhân khoá bơm (sự cố, chế độ Tắt hẳn) hoặc tưới thủ công.{{/is_alert}}\n{{#is_recovery}}✅ AI dự báo đất sẽ xuống dưới ngưỡng khô mà bơm không tưới được – tín hiệu đã trở lại bình thường. Xác nhận khắc phục trên web AgriGuard để hệ thống kiểm chứng và đóng sự cố.{{/is_recovery}}\n\nDashboard: AgriGuard – IoT Irrigation Operations ",
+    "priority": 2,
+    "tags": [
+      "app:agriguard",
+      "incident_type:water_shortage_risk",
+      "team:agriguard"
+    ],
+    "options": {
+      "notify_audit": false,
+      "include_tags": true,
+      "require_full_window": false,
+      "notify_no_data": false,
+      "renotify_interval": 0,
+      "thresholds": {
+        "critical": 0.7,
+        "warning": 0.5
+      }
+    }
+  },
+  {
+    "name": "[AgriGuard] Nguy cơ stress nhiệt cao (AI dự báo)",
+    "type": "query alert",
+    "query": "min(last_15m):max:agriguard.ai.risk.heat_stress{*} by {device_id} >= 0.7",
+    "message": "{{#is_alert}}🚨 **AI dự báo cây sắp bị stress nhiệt trong 6 giờ tới** trên `{{device_id.name}}`\n\n**Điều tra:** Xem `agriguard.ai.risk.heat_stress`, nhiệt độ dự báo trên tab AI tưới, `agriguard.mist.state`.\n\n**Khắc phục:** Bật phun sương / che lưới; đảm bảo bơm ở chế độ AI hoặc Tự động để tưới trước giờ nóng.{{/is_alert}}\n{{#is_recovery}}✅ AI dự báo cây sắp bị stress nhiệt trong 6 giờ tới – tín hiệu đã trở lại bình thường. Xác nhận khắc phục trên web AgriGuard để hệ thống kiểm chứng và đóng sự cố.{{/is_recovery}}\n\nDashboard: AgriGuard – IoT Irrigation Operations ",
+    "priority": 3,
+    "tags": [
+      "app:agriguard",
+      "incident_type:heat_stress_risk",
+      "team:agriguard"
+    ],
+    "options": {
+      "notify_audit": false,
+      "include_tags": true,
+      "require_full_window": false,
+      "notify_no_data": false,
+      "renotify_interval": 0,
+      "thresholds": {
+        "critical": 0.7,
+        "warning": 0.5
       }
     }
   },

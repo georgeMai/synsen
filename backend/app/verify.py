@@ -6,7 +6,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import nullcontext
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, Optional
 
 try:                                  # có khi chạy bằng ddtrace-run (Docker); không bắt buộc khi chạy thử
     from ddtrace import tracer
@@ -35,6 +35,10 @@ async def _wait_for(predicate: Callable[[], bool], timeout_s: float, interval: f
         if asyncio.get_running_loop().time() >= deadline:
             return False
         await asyncio.sleep(interval)
+
+
+DRIFT_WINDOW_S = 180   # xu hướng nhiệt độ / độ ẩm tự nhiên trước khi chạy thử phun sương
+MIN_EFFECT_S = 20      # chờ tối thiểu trước khi kết luận (tránh nhiễu tức thời)
 
 
 def _fresh(device_id: str, max_age_s: float = 15) -> bool:
@@ -70,6 +74,11 @@ async def _verify_pump_flow(inc: dict, cfg: dict) -> Result:
     if not window:
         return False, "Không có dữ liệu bơm đang chạy trong lúc kiểm tra (lệnh không thực hiện?)"
     avg = sum(r.flow_lpm for r in window) / len(window)
+    if inc["type"] == "pump_low_flow" and rt.normal_flow_lpm:
+        need = float(cfg["health"].get("low_flow_ratio", 0.6)) * rt.normal_flow_lpm
+        if avg >= need:
+            return True, f"Chạy thử bơm: lưu lượng {avg:.2f} L/phút, đạt ≥ {need:.2f} (mức bình thường {rt.normal_flow_lpm:.2f})"
+        return False, f"Chạy thử bơm: lưu lượng chỉ {avg:.2f} L/phút, cần ≥ {need:.2f} L/phút"
     if avg >= p["min_flow_lpm"] and not window[-1].pump_lockout:
         return True, f"Chạy thử bơm: lưu lượng trung bình {avg:.2f} L/phút (≥ {p['min_flow_lpm']})"
     return False, f"Chạy thử bơm: lưu lượng trung bình chỉ {avg:.2f} L/phút"
@@ -107,28 +116,76 @@ async def _verify_mist_effect(inc: dict, cfg: dict) -> Result:
     m = cfg["mist"]
     if rt.latest and rt.latest.mist_lockout:
         await commands.send(dev, "mist", "clear_lockout", reason="verification", actor="system")
-    before = [r.air_humidity_pct for r in rt.window(30, utcnow()) if r.air_humidity_pct is not None]
-    if not before:
-        return False, "Không có số đo độ ẩm để so sánh"
-    start = sum(before) / len(before)
-    if start > 100 - m["min_rise_pct"] - 5:
-        return True, f"Độ ẩm đã cao ({start:.0f}%), không cần chạy thử"
+    rise_need = float(m.get("verify_rise_pct", 1))
+    drop_need = float(m.get("verify_temp_drop_c", 1))
+
+    def series(attr: str, seconds: float) -> list[tuple[float, float]]:
+        now = utcnow()
+        return [((r.ts - now).total_seconds(), getattr(r, attr)) for r in rt.window(seconds, now)
+                if getattr(r, attr) is not None]
+
+    def avg(attr: str, seconds: float) -> Optional[float]:
+        vals = [v for _, v in series(attr, seconds)]
+        return sum(vals) / len(vals) if vals else None
+
+    def drift(attr: str) -> float:
+        """Xu hướng tự nhiên (đơn vị/giây) trong 3 phút trước khi chạy thử – hồi quy tuyến tính.
+        Trời tự mát đi hay ẩm lên thì không được tính là công của máy phun sương."""
+        pts = series(attr, DRIFT_WINDOW_S)
+        if len(pts) < 6 or pts[-1][0] - pts[0][0] < 60:
+            return 0.0
+        mx = sum(x for x, _ in pts) / len(pts)
+        my = sum(y for _, y in pts) / len(pts)
+        den = sum((x - mx) ** 2 for x, _ in pts)
+        return sum((x - mx) * (y - my) for x, y in pts) / den if den else 0.0
+
+    h0, t0 = avg("air_humidity_pct", 30), avg("air_temp_c", 30)
+    if h0 is None and t0 is None:
+        return False, "Không có số đo nhiệt độ / độ ẩm để so sánh"
+    # chỉ trừ phần trời tự thay đổi CÙNG chiều với tác dụng phun sương (ẩm lên / mát đi)
+    h_drift, t_drift = max(0.0, drift("air_humidity_pct")), min(0.0, drift("air_temp_c"))
     test_s = settings.verify_mist_seconds
     await incidents.add_note(inc["_id"], "system", "verification_started",
-                             f"Chạy thử phun sương {test_s} giây, độ ẩm ban đầu {start:.1f}%")
+                             f"Chạy thử phun sương {test_s} giây: đạt khi độ ẩm tăng ≥ {rise_need:g}% "
+                             f"hoặc nhiệt độ giảm ≥ {drop_need:g}°C so với xu hướng tự nhiên (ban đầu "
+                             f"{'–' if h0 is None else f'{h0:.1f}%'}, {'–' if t0 is None else f'{t0:.1f}°C'})")
+    started = utcnow()
     await commands.send(dev, "mist", "on", duration_s=test_s + 5, reason="verification", actor="system")
-    target = min(start + m["min_rise_pct"], m["air_max_pct"])
+    result: dict = {}
 
-    def risen() -> bool:
-        recent = [r.air_humidity_pct for r in rt.window(15, utcnow()) if r.air_humidity_pct is not None]
-        return bool(recent) and sum(recent) / len(recent) >= target
+    def effective() -> bool:
+        el = (utcnow() - started).total_seconds()
+        if el < MIN_EFFECT_S:
+            return False
+        h, t = avg("air_humidity_pct", 15), avg("air_temp_c", 15)
+        # hiệu quả = thay đổi đo được − phần trời tự thay đổi (ngoại suy xu hướng trước đó)
+        dh = h - h0 - h_drift * el if h is not None and h0 is not None else None
+        dt = t0 - t + t_drift * el if t is not None and t0 is not None else None
+        result.update(h=h, t=t, dh=dh, dt=dt, el=el)
+        if dh is not None and dh >= rise_need:
+            result["by"] = "humidity"
+            return True
+        if dt is not None and dt >= drop_need:
+            result["by"] = "temperature"
+            return True
+        return False
 
-    ok = await _wait_for(risen, test_s, interval=2)
+    ok = await _wait_for(effective, test_s, interval=2)
     await commands.send(dev, "mist", "off", reason="verification", actor="system")
-    now_h = rt.latest.air_humidity_pct if rt.latest else None
+    el = result.get("el", test_s)
+
+    def describe(label: str, v0, v, nat: float, unit: str) -> str:
+        if v0 is None or v is None:
+            return f"{label} không đo được"
+        txt = f"{label} {v0:.1f}{unit} → {v:.1f}{unit} ({v - v0:+.1f}{unit}"
+        return txt + (f", trời tự thay đổi {nat * el:+.1f}{unit})" if abs(nat * el) >= 0.05 else ")")
+
+    sh = describe("độ ẩm", h0, result.get("h"), h_drift, "%")
+    st = describe("nhiệt độ", t0, result.get("t"), t_drift, "°C")
     if ok:
-        return True, f"Phun sương làm độ ẩm tăng từ {start:.1f}% lên {now_h:.1f}%"
-    return False, f"Sau {test_s} giây độ ẩm không tăng đủ {m['min_rise_pct']}% (hiện {now_h}%)"
+        return True, f"Phun sương có hiệu quả: {sh if result['by'] == 'humidity' else st}"
+    return False, (f"Sau {test_s} giây phun sương chưa có hiệu quả: {sh}, {st}. "
+                   f"Cần độ ẩm tăng ≥ {rise_need:g}% hoặc nhiệt độ giảm ≥ {drop_need:g}°C so với tự nhiên")
 
 
 def _verify_sensor(attr: str, label: str) -> Callable[[dict, dict], Awaitable[Result]]:
@@ -238,6 +295,7 @@ async def _verify_irrigation_response(inc: dict, cfg: dict) -> Result:
 VERIFIERS: dict[str, Callable[[dict, dict], Awaitable[Result]]] = {
     "device_offline": _verify_online,
     "pump_dry_run": _verify_pump_flow,
+    "pump_low_flow": _verify_pump_flow,
     "flow_without_pump": _verify_no_leak,
     "pump_overrun": _verify_actuator_off("pump"),
     "mist_overrun": _verify_actuator_off("mist"),

@@ -32,6 +32,8 @@ class Settings:
     mongodb_uri: str = field(default_factory=lambda: _env("MONGODB_URI", "mongodb://localhost:27017"))
     mongodb_db: str = field(default_factory=lambda: _env("MONGODB_DB", "agriguard"))
     telemetry_ttl_days: int = field(default_factory=lambda: _int("TELEMETRY_TTL_DAYS", 30))
+    forecast_ttl_days: int = field(default_factory=lambda: _int("FORECAST_TTL_DAYS", 3))
+    ai_interval_s: float = field(default_factory=lambda: float(_env("AI_INTERVAL_S", "60")))
 
     mqtt_host: str = field(default_factory=lambda: _env("MQTT_HOST", "localhost"))
     mqtt_port: int = field(default_factory=lambda: _int("MQTT_PORT", 1883))

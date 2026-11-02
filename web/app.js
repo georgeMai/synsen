@@ -22,6 +22,8 @@
     max_runtime: "quá thời gian", too_humid: "quá ẩm", comfort_reached: "đã mát & đủ ẩm", manual: "thủ công",
     verification: "kiểm chứng sự cố", incident_interlock: "khoá do sự cố", mode_off: "chế độ tắt",
     soil_sensor_unavailable: "mất cảm biến đất", dht_unavailable: "mất cảm biến DHT11",
+    ai_plan: "AI: theo lịch tưới tối ưu", ai_safety_dry: "AI: đất quá khô – tưới an toàn",
+    ai_fallback_soil_dry: "AI (dự phòng ngưỡng): đất khô", ai_fallback_hot_day: "AI (dự phòng ngưỡng): trời nóng",
   };
   const ACTIONS = { on: "Bật", off: "Tắt", clear_lockout: "Gỡ khoá" };
   const CMD_STATUS = { pending: "đang gửi", sent: "đã gửi, chờ xác nhận", acked: "đã xác nhận", rejected: "bị từ chối", timeout: "không phản hồi", failed: "gửi lỗi" };
@@ -146,10 +148,11 @@
     if (!d) { box.innerHTML = ""; return; }
     const a = (d.actuators || {})[act] || {};
     const name = act === "pump" ? "Bơm tưới gốc" : "Máy phun sương";
-    const hint = act === "pump" ? "Tự động theo độ ẩm đất (và trời nóng)" : "Tự động theo nhiệt độ & độ ẩm không khí";
+    const hint = act === "pump" ? ((d.actuators || {}).pump?.mode === "AI" ? "AI quyết định khi nào tưới và tưới bao nhiêu (tab AI tưới)" : "Tự động theo độ ẩm đất (và trời nóng)") : "Tự động theo nhiệt độ & độ ẩm không khí";
     const on = a.state === "on", lock = a.lockout;
     const stateText = lock ? "KHOÁ AN TOÀN" : on ? "ĐANG CHẠY" : "TẮT";
-    const modes = [["AUTO", "Tự động"], ["MANUAL", "Thủ công"], ["OFF", "Tắt hẳn"]];
+    const modes = act === "pump" ? [["AUTO", "Tự động"], ["AI", "AI"], ["MANUAL", "Thủ công"], ["OFF", "Tắt hẳn"]]
+      : [["AUTO", "Tự động"], ["MANUAL", "Thủ công"], ["OFF", "Tắt hẳn"]];
     const dis = !fresh(d) ? "disabled" : "";
     box.innerHTML = `
       <div class="head"><div><h3>${name}</h3><div class="muted small">${hint}</div></div>
@@ -165,7 +168,7 @@
         ${lock ? `<button class="danger" data-cmd="clear_lockout" data-act="${act}" ${dis}>Gỡ khoá</button>` : ""}
       </div>
       <div class="last">${lastCommand(act)}</div>
-      ${a.mode === "AUTO" || (d.control || {})[act]?.reason === "incident_block" ? `<div class="last why">${controlWhy(d, act)}</div>` : ""}`;
+      ${a.mode === "AUTO" || a.mode === "AI" || (d.control || {})[act]?.reason === "incident_block" ? `<div class="last why">${controlWhy(d, act)}</div>` : ""}`;
   }
 
   // Thời lượng bật tay: bơm có thêm mức giây (chậu demo); không vượt "chạy tối đa mỗi lần"
@@ -188,6 +191,8 @@
     running: "đang chạy, chờ điều kiện tắt", too_humid: "độ ẩm không khí đã ≥ ngưỡng tối đa",
     min_off: "đang trong thời gian nghỉ tối thiểu", no_data: "chưa có dữ liệu",
     decided_on: "vừa ra lệnh BẬT", decided_off: "vừa ra lệnh TẮT",
+    ai_settling: "chờ nước thấm để đo kết quả lần tưới", ai_learning: "đang học %/L và lưu lượng – tạm dùng ngưỡng",
+    ai_no_plan: "chưa có kế hoạch mới – tạm dùng ngưỡng", ai_no_need: "chưa cần tưới trong 6 giờ tới",
   };
   function controlWhy(d, act) {
     const c = (d.control || {})[act];
@@ -195,13 +200,14 @@
     const s = S.settings, r = d.latest || {};
     let text = WHY[c.reason] || c.reason;
     if (c.reason === "incident_block" && c.incidents?.length) text += ` (${c.incidents.join(", ")})`;
-    if (c.decision) text += ` – ${c.decision}`;
+    if (c.decision) text += ` – ${REASONS[c.decision] || c.decision}`;
+    if (c.reason === "ai_scheduled") text = `sẽ tưới ${num(c.liters, 2)} L (${c.seconds} giây) lúc ${fmtTime.format(new Date(c.start_at)).slice(0, 5)}`;
     if (c.reason === "conditions_not_met" && s) {
       text = act === "mist"
         ? `chưa đạt điều kiện: cần nhiệt độ > ${s.mist.hot_temp_c}°C hoặc độ ẩm KK < ${s.mist.air_dry_pct}%`
         : `chưa đạt điều kiện: cần đất < ${s.pump.soil_dry_pct}%`;
     }
-    return `Tự động: ${text}`;
+    return `${(d.actuators || {})[act]?.mode === "AI" ? "AI" : "Tự động"}: ${text}`;
   }
 
   // ------------------------------------------------------------------ render: charts
@@ -326,11 +332,17 @@
       ["dry_run_seconds", "Báo chạy khô sau (giây)"], ["leak_seconds", "Báo rò/kẹt relay sau (giây)"]]],
     mist: ["Phun sương", [["hot_temp_c", "Trời nóng – bật phun (°C)"], ["temp_hysteresis_c", "Độ trễ nhiệt (°C)"], ["air_dry_pct", "Không khí khô – bật phun (%)"],
       ["air_target_pct", "Độ ẩm mục tiêu (%)"], ["air_max_pct", "Độ ẩm tối đa – không phun (%)"], ["max_minutes", "Chạy tối đa mỗi lần (phút)"],
-      ["min_off_minutes", "Nghỉ tối thiểu (phút)"], ["check_minutes", "Kiểm tra hiệu quả sau (phút)"], ["min_rise_pct", "Độ ẩm phải tăng ít nhất (%)"]]],
+      ["min_off_minutes", "Nghỉ tối thiểu (phút)"], ["check_minutes", "Kiểm tra hiệu quả sau (phút)"], ["min_rise_pct", "Độ ẩm phải tăng ít nhất (%)"],
+      ["verify_rise_pct", "Kiểm chứng: độ ẩm tăng ít nhất (%)"], ["verify_temp_drop_c", "Kiểm chứng: HOẶC nhiệt độ giảm ít nhất (°C)"]]],
     irrigation: ["Phản hồi đất / lít nước", [["settle_seconds", "Chờ nước thấm sau khi tắt bơm (giây)"], ["before_seconds", "Lấy độ ẩm “trước” trong (giây)"], ["after_window_seconds", "Lấy độ ẩm “sau” trong (giây)"], ["min_baseline_events", "Số lần tưới để học mức bình thường"],
       ["baseline_events", "Số lần tưới gần nhất dùng làm chuẩn"], ["zscore_threshold", "Ngưỡng bất thường |z|"], ["min_liters", "Lượng nước tối thiểu để đánh giá (L)"],
       ["max_start_soil_pct", "Không đánh giá khi đất đã ẩm hơn (%)"], ["test_seconds", "Tưới thử khi kiểm chứng (giây)"]]],
-    health: ["Giám sát", [["offline_after_s", "Coi là offline sau (giây)"], ["stuck_minutes", "Cảm biến đơ sau (phút)"], ["sensor_fail_count", "Số lần đọc lỗi liên tiếp"], ["rssi_weak_dbm", "Wi‑Fi yếu dưới (dBm)"]]],
+    health: ["Giám sát", [["offline_after_s", "Coi là offline sau (giây)"], ["stuck_minutes", "Cảm biến đơ sau (phút)"], ["sensor_fail_count", "Số lần đọc lỗi liên tiếp"], ["rssi_weak_dbm", "Wi‑Fi yếu dưới (dBm)"],
+      ["low_flow_ratio", "Báo bơm yếu khi lưu lượng < (× mức đã học)"]]],
+    ai: ["AI tưới (chế độ AI của bơm)", [["horizon_hours", "Dự báo trước (giờ)"], ["train_days", "Học từ dữ liệu (ngày)"], ["min_samples", "Số mẫu tối thiểu để học"],
+      ["retrain_hours", "Học lại định kỳ (giờ)"], ["plan_interval_s", "Lập lại kế hoạch mỗi (giây)"], ["plan_margin_pct", "Chỉ xét tưới khi đất ≤ ngưỡng khô + (%)"],
+      ["stress_weight", "Trọng số thiếu nước (L/phút)"], ["evap_penalty", "Hệ số bay hơi khi nóng"], ["critical_margin_pct", "Tưới ngay khi đất < ngưỡng khô − (%)"],
+      ["ridge_lambda", "Ridge λ (chống học thuộc)"]]],
   };
 
   function renderSettings() {
@@ -346,6 +358,7 @@
     ["dry_run", "Bơm chạy khô", "Hết nước / tắc ống: bơm chạy nhưng lưu lượng = 0"],
     ["leak", "Rò nước / relay kẹt", "Có dòng chảy khi bơm đang tắt"],
     ["mist_empty", "Máy phun hết nước", "Phun sương không làm tăng độ ẩm"],
+    ["clog", "Tắc lọc / bơm yếu", "Lưu lượng còn ~45% mức bình thường đã học (phát hiện ngay khi bơm chạy)"],
     ["hose_off", "Ống tưới tuột khỏi gốc", "Bơm chạy, có lưu lượng nhưng đất không ẩm lên (phát hiện sau lần tưới kế tiếp)"],
     ["dht_fail", "DHT11 hỏng", "Cảm biến nhiệt độ/độ ẩm trả lỗi"],
     ["soil_disconnect", "Tuột dây cảm biến đất", "ADC = 4095"],
@@ -375,6 +388,7 @@
     if (S.tab === "sim") renderSim();
     if (S.tab === "metrics") renderMetrics();
     if (S.tab === "water") renderWater().catch(console.warn);
+    if (S.tab === "ai") renderAi().catch(console.warn);
   }
 
   // ------------------------------------------------------------------ tab: Metrics
@@ -504,6 +518,112 @@
   });
 
 
+  // ------------------------------------------------------------------ tab: AI tưới
+  const RISK = { low: ["ok", "Thấp"], medium: ["warning", "Trung bình"], high: ["critical", "Cao"] };
+  const TRIGGER = { change_stream: "Change Stream (lần tưới mới)", irrigation_event: "lần tưới mới", schedule: "định kỳ", manual: "bấm Học lại" };
+  let aiCache = { at: 0 };
+
+  function aiChart(f, hist, s) {
+    const W = 760, H = 230, m = { l: 36, r: 10, t: 12, b: 24 };
+    const iw = W - m.l - m.r, ih = H - m.t - m.b;
+    const pts = f ? f.points : [], plan = f ? f.with_plan : [];
+    const t0 = hist.length ? new Date(hist[0].t).getTime() : (pts.length ? new Date(pts[0].t).getTime() : Date.now());
+    const t1 = pts.length ? new Date(pts[pts.length - 1].t).getTime() : Date.now();
+    const vals = [...hist.map((h) => h.soil), ...pts.map((p) => p.soil), ...plan.map((p) => p.soil), s.pump.soil_dry_pct, s.pump.soil_target_pct];
+    const lo = Math.max(0, Math.floor(Math.min(...vals) / 10) * 10), hi = Math.min(100, Math.ceil(Math.max(...vals) / 10) * 10 || 100);
+    const x = (t) => m.l + ((new Date(t).getTime() - t0) / Math.max(1, t1 - t0)) * iw;
+    const y = (v) => m.t + ih - ((v - lo) / Math.max(1, hi - lo)) * ih;
+    const path = (arr) => arr.map((p, i) => `${i ? "L" : "M"}${x(p.t).toFixed(1)},${y(p.soil).toFixed(1)}`).join("");
+    let svg = `<svg viewBox="0 0 ${W} ${H}" class="water-svg" role="img" aria-label="Độ ẩm đất: 2 giờ qua và dự báo 6 giờ tới">`;
+    for (let v = lo; v <= hi; v += 10) svg += `<line x1="${m.l}" x2="${W - m.r}" y1="${y(v)}" y2="${y(v)}" stroke="var(--grid)"/><text x="${m.l - 6}" y="${y(v) + 4}" text-anchor="end" class="ax">${v}</text>`;
+    for (const [v, lab] of [[s.pump.soil_dry_pct, "khô"], [s.pump.soil_target_pct, "đủ ẩm"]]) svg += `<line x1="${m.l}" x2="${W - m.r}" y1="${y(v)}" y2="${y(v)}" stroke="var(--muted)" stroke-dasharray="3 4"/><text x="${W - m.r - 2}" y="${y(v) - 4}" text-anchor="end" class="ax">${lab} ${v}%</text>`;
+    const now = pts.length ? pts[0].t : null;
+    if (now) svg += `<line x1="${x(now)}" x2="${x(now)}" y1="${m.t}" y2="${m.t + ih}" stroke="var(--text-2)" stroke-width="1"/><text x="${x(now) + 4}" y="${m.t + 10}" class="ax">bây giờ</text>`;
+    for (let k = 0; k <= 6; k++) { const t = t0 + ((t1 - t0) * k) / 6; svg += `<text x="${x(t)}" y="${H - 6}" text-anchor="${k === 0 ? "start" : k === 6 ? "end" : "middle"}" class="ax">${fmtTime.format(new Date(t)).slice(0, 5)}</text>`; }
+    if (hist.length) svg += `<path d="${path(hist)}" fill="none" stroke="var(--series-soil)" stroke-width="2.2"/>`;
+    if (pts.length) svg += `<path d="${path(pts)}" fill="none" stroke="var(--series-soil)" stroke-width="2" stroke-dasharray="6 5"/>`;
+    const st = f?.plan?.start_at;
+    if (st && f.plan.decision === "irrigate") {
+      svg += `<path d="${path(plan)}" fill="none" stroke="var(--series-flow)" stroke-width="2.4"/>`;
+      svg += `<line x1="${x(st)}" x2="${x(st)}" y1="${m.t}" y2="${m.t + ih}" stroke="var(--series-flow)" stroke-dasharray="2 3"/><text x="${x(st) + 4}" y="${m.t + ih - 6}" class="ax" style="fill:var(--series-flow)">tưới ${num(f.plan.liters, 2)} L</text>`;
+    }
+    return svg + "</svg>";
+  }
+
+  async function renderAi(force = false) {
+    const box = $("#tab-ai");
+    const d = device();
+    if (!d) { box.innerHTML = '<p class="muted">Chưa có thiết bị.</p>'; return; }
+    if (force || aiCache.dev !== d._id || Date.now() - aiCache.at > 30000) {
+      if (aiCache.dev !== d._id) box.innerHTML = '<p class="muted small"><span class="spinner"></span> Đang tải dự báo AI…</p>';
+      const data = await api(`devices/${encodeURIComponent(d._id)}/ai`);
+      if (device()?._id !== d._id) return;
+      aiCache = { dev: d._id, at: Date.now(), data };
+    }
+    const w = aiCache.data, s = S.settings, f = w.forecast, mdl = w.ai.model || {}, rel = w.ai.reliability || {};
+    if (!s) return;
+    const p = f?.plan || {}, rk = f?.risks || {};
+    const card = (label, value, unit, sub, cls = "") => `<div class="kpi card ${cls}"><div class="label">${label}</div><div class="value">${value}${unit ? `<small>${unit}</small>` : ""}</div><div class="sub">${sub || ""}</div></div>`;
+    const riskCard = (label, r, sub) => { const [c, t] = RISK[r?.level] || ["idle", "–"]; return card(label, `<span class="risk ${c}">${t}</span>`, "", `${r ? `điểm ${num(r.score, 2)} · ` : ""}${sub || ""}`); };
+    const hm = (t) => (t ? fmtTime.format(new Date(t)).slice(0, 5) : "–");
+    let next = "Chưa cần tưới", nextSub = p.dry_at ? `đất chạm ngưỡng khô lúc ${hm(p.dry_at)}` : "đất đủ ẩm trong 6 giờ tới";
+    if (p.decision === "irrigate") { next = hm(p.start_at); nextSub = `${num(p.liters, 2)} L · bơm ${p.seconds} giây · đất lúc đó ${num(p.soil_at_start, 0)}%`; }
+    if (p.decision === "learning") { next = "Đang học"; nextSub = "cần vài lần tưới để học %/L và lưu lượng bơm"; }
+    const tc = p.threshold_compare;
+    const cmp = tc && p.decision === "irrigate"
+      ? `So với tưới theo ngưỡng (bật lúc ${hm(tc.start_at)}, ${num(tc.liters, 2)} L): nước bay hơi ước tính ${num(p.evap_loss_liters, 2)} L thay vì ${num(tc.evap_loss_liters, 2)} L, thời gian đất dưới ngưỡng khô ${p.stress_minutes_with} phút thay vì ${tc.stress_minutes} phút.`
+      : "";
+    const mode = w.mode;
+    const weights = mdl.weights ? Object.entries(mdl.weights).map(([k, v]) => `<tr><td>${esc(AI_FEATURES[k] || k)}</td><td class="val">${v > 0 ? "+" : ""}${num(v, 3)}</td><td class="muted">${k.startsWith("hour_") ? "nhịp ngày – đêm (đọc cùng cặp sin/cos)" : v > 0 ? "tăng → đất khô nhanh hơn" : "tăng → đất khô chậm hơn"}</td></tr>`).join("") : "";
+    box.innerHTML = `
+      <p class="small muted">AI học tốc độ khô của đất từ dữ liệu thật của <b>${esc(d._id)}</b> (Ridge regression trên đặc trưng do MongoDB Aggregation Pipeline tạo),
+        dự báo độ ẩm đất 6 giờ tới, rồi chọn thời điểm và lượng nước tối ưu. Bơm đang ở chế độ <b>${esc(mode || "–")}</b>${mode !== "AI" ? ` – <button data-mode="AI" data-act="pump">Chuyển bơm sang chế độ AI</button>` : " – AI đang điều khiển bơm"}.
+        <span class="chip">${w.change_streams ? "Change Stream đang chạy: học lại ngay sau mỗi lần tưới" : "học lại sau mỗi lần tưới (không có Change Stream)"}</span></p>
+      <div class="grid kpis water-kpis">
+        ${card("Độ ẩm đất sau 1 giờ", num(f?.soil_1h, 1), "%", f ? `bây giờ ${num(f.soil_now, 1)}% · không tưới` : "chưa có dự báo")}
+        ${card("Độ ẩm đất sau 6 giờ", num(f?.soil_6h, 1), "%", f ? (f.method === "ridge" ? "mô hình Ridge" : "tốc độ khô đo trực tiếp (chưa đủ dữ liệu học)") : "")}
+        ${card("Lần tưới tới (AI)", next, "", nextSub)}
+        ${riskCard("Nguy cơ thiếu nước", rk.water_shortage, rk.water_shortage && !rk.water_shortage.pump_available ? "bơm đang không tưới được" : "")}
+        ${riskCard("Nguy cơ stress nhiệt", rk.heat_stress, rk.heat_stress?.temp_max != null ? `nhiệt độ cao nhất dự báo ${num(rk.heat_stress.temp_max, 1)}°C` : "")}
+        ${card("Độ tin cậy (sai số thật 1 giờ)", rel.mae_1h_pct != null ? num(rel.mae_1h_pct, 2) : "–", rel.mae_1h_pct != null ? "%" : "", rel.n ? `MAE ${rel.n} lần đối chiếu / 24 giờ` : "chờ đối chiếu dự báo với thực tế sau 1 giờ")}
+      </div>
+      <div class="water-chart">
+        <div class="water-legend small"><span><i class="ln" style="border-color:var(--series-soil)"></i>Độ ẩm đất 2 giờ qua</span><span><i class="ln dash" style="border-color:var(--series-soil)"></i>Dự báo nếu không tưới</span>
+          <span><i class="ln" style="border-color:var(--series-flow)"></i>Dự báo theo lịch tưới AI</span>
+          <button data-ai-train style="margin-left:auto">Học lại ngay</button></div>
+        <div class="scroll">${aiChart(f, w.history || [], s)}</div>
+        ${cmp ? `<p class="small">${cmp}</p>` : ""}
+      </div>
+      <div class="ai-cols">
+        <div><h3>Mô hình đang dùng</h3>
+          <p class="small">${mdl.status === "ok"
+            ? `Ridge regression · ${mdl.n_samples} mẫu (học ${mdl.n_train}, kiểm tra ${mdl.n_test}) · MAE kiểm định <b>${num(mdl.mae_pct_per_hour, 2)} %/giờ</b> so với ${num(mdl.baseline_mae_pct_per_hour, 2)} nếu chỉ lấy trung bình (kỹ năng ${num(mdl.skill, 2)})`
+            : `Chưa đủ dữ liệu để học (${mdl.n_samples ?? 0}/${s.ai.min_samples} mẫu khung 10 phút không tưới). Đang dùng tốc độ khô đo trực tiếp.`}
+            · học lúc ${mdl.trained_at ? fmtDateTime.format(new Date(mdl.trained_at)) : "–"} (${esc(TRIGGER[mdl.trigger] || mdl.trigger || "–")})</p>
+          ${weights ? `<div class="table-wrap"><table class="metrics"><thead><tr><th>Đặc trưng</th><th>Hệ số (chuẩn hoá)</th><th>Ý nghĩa</th></tr></thead><tbody>${weights}</tbody></table></div>` : ""}
+        </div>
+        <div><h3>Lịch sử học lại</h3><div class="table-wrap"><table class="metrics"><thead><tr><th>Lúc</th><th>Kích hoạt</th><th>Mẫu</th><th>MAE</th><th>Mốc TB</th></tr></thead><tbody>
+          ${(w.models || []).map((x) => `<tr><td>${fmtDateTime.format(new Date(x.trained_at))}</td><td>${esc(TRIGGER[x.trigger] || x.trigger)}</td><td>${x.n_samples}</td><td class="val">${num(x.mae_pct_per_hour, 2)}</td><td class="val">${num(x.baseline_mae_pct_per_hour, 2)}</td></tr>`).join("") || '<tr><td colspan="5" class="muted">Chưa có</td></tr>'}
+        </tbody></table></div>
+          <h3>Dự báo vs thực tế (sau 1 giờ)</h3><div class="table-wrap"><table class="metrics"><thead><tr><th>Dự báo lúc</th><th>Dự báo</th><th>Thật</th><th>Sai số</th></tr></thead><tbody>
+          ${(w.errors || []).slice(-6).reverse().map((e) => `<tr><td>${hm(e.created_at)}</td><td class="val">${num(e.soil_1h, 1)}%</td><td class="val">${num(e.actual_1h, 1)}%</td><td class="val">${e.error_1h > 0 ? "+" : ""}${num(e.error_1h, 1)}</td></tr>`).join("") || '<tr><td colspan="4" class="muted">Chờ đủ 1 giờ để đối chiếu</td></tr>'}
+          </tbody></table></div></div>
+      </div>
+      <details class="pipeline"><summary class="small">Pipeline MongoDB tạo đặc trưng ML ($dateTrunc · $setWindowFields quá khứ & tương lai · $derivative · $exp tính VPD) và hồ sơ thời tiết theo giờ</summary>
+        <pre>${esc(JSON.stringify(w.pipelines, null, 2))}</pre></details>`;
+  }
+  const AI_FEATURES = { temp: "Nhiệt độ", vpd: "VPD – độ khô không khí", soil: "Độ ẩm đất", hour_sin: "Giờ trong ngày (sin)", hour_cos: "Giờ trong ngày (cos)" };
+  document.addEventListener("click", async (ev) => {
+    const b = ev.target.closest("[data-ai-train]");
+    if (!b || !device()) return;
+    b.disabled = true; b.textContent = "Đang học…";
+    try {
+      const r = await post(`devices/${encodeURIComponent(device()._id)}/ai/train`);
+      toast(r.status === "ok" ? `Đã học lại: ${r.n_samples} mẫu, MAE ${num(r.mae_pct_per_hour, 2)} %/giờ` : `Chưa đủ dữ liệu (${r.n_samples} mẫu)`);
+      renderAi(true).catch(console.warn);
+    } catch (e) { toast("Lỗi: " + e.message); b.disabled = false; b.textContent = "Học lại ngay"; }
+  });
+
   // ------------------------------------------------------------------ tab: Báo cáo nước (MongoDB Aggregation)
   const FORECAST_METHOD = {
     usage_avg7: "trung bình nước thực dùng 7 ngày trước ($setWindowFields)",
@@ -548,7 +668,9 @@
     if (force || waterCache.key !== key || Date.now() - waterCache.at > 30000) {
       if (!waterCache.data || waterCache.key !== key) box.innerHTML = '<p class="muted small"><span class="spinner"></span> Đang chạy aggregation pipeline…</p>';
       const q = `days=${S.waterDays || 14}${tank ? `&tank_liters=${tank}` : ""}`;
-      waterCache = { key, at: Date.now(), data: await api(`devices/${encodeURIComponent(d._id)}/water/daily?${q}`) };
+      const data = await api(`devices/${encodeURIComponent(d._id)}/water/daily?${q}`);
+      if (device()?._id !== d._id) return;          // đã chọn thiết bị khác trong lúc chờ -> bỏ kết quả cũ
+      waterCache = { key, at: Date.now(), data };
     }
     const w = waterCache.data, s = w.summary, rows = w.rows;
     const card = (label, value, unit, sub) => `<div class="kpi card"><div class="label">${label}</div><div class="value">${value}${unit ? `<small>${unit}</small>` : ""}</div><div class="sub">${sub || ""}</div></div>`;
@@ -603,6 +725,7 @@
       if (S.tab === "commands") renderCommands();
       if (S.tab === "metrics") renderMetrics();
       if (S.tab === "water" && document.activeElement?.id !== "tank-l" && Date.now() - waterCache.at > 60000) renderWater().catch(console.warn);
+      if (S.tab === "ai" && Date.now() - aiCache.at > 30000) renderAi().catch(console.warn);
     } catch (e) {
       $("#sys-status").textContent = "Mất kết nối máy chủ";
     }
@@ -636,7 +759,10 @@
     try {
       if (b.dataset.dev) {
         S.selected = b.dataset.dev; store.set("agri.device", S.selected);
+        if (S.tab === "water") $("#tab-water").innerHTML = '<p class="muted small"><span class="spinner"></span> Đang chạy aggregation pipeline…</p>';
         await refresh(); loadCharts(); if (S.tab === "sim") renderSim();
+        if (S.tab === "water") renderWater(true).catch(console.warn);
+        if (S.tab === "ai") { $("#tab-ai").innerHTML = '<p class="muted small"><span class="spinner"></span> Đang tải dự báo AI…</p>'; renderAi(true).catch(console.warn); }
       } else if (b.dataset.min) {
         S.range = +b.dataset.min;
         document.querySelectorAll("#range button").forEach((x) => x.classList.toggle("on", x === b));
@@ -646,6 +772,7 @@
       } else if (b.dataset.mode && d) {
         await put(`devices/${encodeURIComponent(d._id)}/actuators/${b.dataset.act}/mode`, { mode: b.dataset.mode });
         toast(`Đã chuyển chế độ ${b.dataset.act === "pump" ? "bơm" : "phun sương"}: ${b.textContent}`); refresh();
+        if (S.tab === "ai") renderAi(true).catch(console.warn);
       } else if (b.dataset.cmd && d) {
         const act = b.dataset.act, action = b.dataset.cmd;
         const duration = action === "on" ? +document.querySelector(`[data-dur="${act}"]`).value : 0;

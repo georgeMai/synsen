@@ -46,7 +46,7 @@ SOIL_DRY_RAW, SOIL_WET_RAW = 3500, 1400
 PUMP_MAX_S, MIST_MAX_S = 600, 900
 PUMP_GRACE_S, PUMP_DRYRUN_S, MIN_FLOW = 8, 60, 0.3
 COMM_LOSS_OFF_S = 120
-FAULTS = {"dry_run", "leak", "dht_fail", "soil_disconnect", "soil_stuck", "offline", "mist_empty", "hose_off",
+FAULTS = {"dry_run", "leak", "dht_fail", "soil_disconnect", "soil_stuck", "offline", "mist_empty", "hose_off", "clog",
           "no_ack", "slow_network"}
 
 
@@ -59,6 +59,7 @@ class SimDevice:
         self.device_id = f"{PREFIX}-{idx:02d}"
         self.zone = f"bed-{idx + 1}"
         self.lock = threading.RLock()
+        self.state_changed = False
         rnd = random.Random(idx)
         self.temp_offset = rnd.uniform(-0.8, 0.8)
         self.phase_offset = rnd.uniform(0, 0.08)
@@ -162,6 +163,12 @@ class SimDevice:
                 self.ack(cid, name, True, "lockout_cleared")
             else:
                 self.ack(cid, name, False, "unknown_action")
+        self.flush_state()
+
+    def flush_state(self) -> None:
+        if self.state_changed:
+            self.state_changed = False
+            self.telemetry()
 
     def ack(self, cid: str, name: str | None, ok: bool, reason: str | None = None) -> None:
         payload = {"command_id": cid, "ok": ok}
@@ -185,6 +192,8 @@ class SimDevice:
                 self.dry_run_s = 0
         else:
             act["auto_off"] = 0.0
+        if act["on"] != on:
+            self.state_changed = True     # gửi telemetry ngay, không chờ chu kỳ 5 giây
         act["on"] = on
 
     # ------------------------------------------------------------- fault injection
@@ -250,13 +259,16 @@ class SimDevice:
 
             water_ok = "dry_run" not in self.faults
             if self.pump["on"] and water_ok:
-                self.flow = max(0.0, random.gauss(1.6, 0.05))
+                # clog: lọc/ống tắc một phần -> lưu lượng còn ~45%
+                self.flow = max(0.0, random.gauss(0.72 if "clog" in self.faults else 1.6, 0.05))
             elif not self.pump["on"] and "leak" in self.faults:
                 self.flow = max(0.0, random.gauss(0.6, 0.05))
             else:
                 self.flow = 0.0
             self.liters += self.flow * dt / 60
-            evaporation = (0.012 + 0.004 * max(0.0, self.temp - 25)) * EVAP * dt
+            # bốc hơi nhanh hơn khi nóng và khi không khí khô (để mô hình AI có quan hệ thật để học)
+            dry_air = max(0.5, 1 + 0.015 * (60 - self.hum))
+            evaporation = (0.012 + 0.004 * max(0.0, self.temp - 25)) * dry_air * EVAP * dt
             if self.pump["on"] and "hose_off" not in self.faults:   # hose_off: nước chảy ra ngoài, không tới gốc
                 self.pending += self.flow * self.soil_k * dt
             infiltrate = self.pending * (1 - math.exp(-dt / INFIL_TAU_S))
@@ -350,7 +362,10 @@ def main() -> None:
         for d in devices.values():
             d.step(dt)
             if tick % TELEMETRY_S == 0:
+                d.state_changed = False
                 d.telemetry()
+            else:
+                d.flush_state()           # tự tắt hết giờ / khoá an toàn -> báo ngay
             if tick % STATUS_S == 0:
                 d.publish_status()
     for d in devices.values():

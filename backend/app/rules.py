@@ -25,6 +25,7 @@ INCIDENT_TYPES: dict[str, IncidentType] = {
     "device_offline": IncidentType("critical", "Thiết bị mất kết nối", ("pump", "mist")),
     "pump_dry_run": IncidentType("critical", "Bơm chạy khô / tắc ống", ("pump",)),
     "flow_without_pump": IncidentType("critical", "Có dòng chảy khi bơm tắt (relay kẹt / rò nước)", ("pump",)),
+    "pump_low_flow": IncidentType("warning", "Lưu lượng bơm giảm (tắc một phần / bơm yếu)"),
     "pump_overrun": IncidentType("warning", "Bơm chạy quá thời gian cho phép", ("pump",)),
     "mist_overrun": IncidentType("warning", "Phun sương chạy quá thời gian cho phép", ("mist",)),
     "mist_ineffective": IncidentType("warning", "Phun sương không làm tăng độ ẩm (hết nước?)", ("mist",)),
@@ -137,6 +138,26 @@ def evaluate(rt: DeviceRuntime, cfg: dict, now: datetime) -> list[Finding]:
             {"pump_seconds": ev.get("pump_seconds"), "liters": ev.get("liters"),
              "irrigation_id": ev.get("irrigation_id"), "reported_by": "short_run"}))
 
+    # Bơm chạy kém hiệu quả: lưu lượng thấp hơn hẳn mức bình thường ĐÃ HỌC từ các lần tưới trước (ai.py)
+    normal = rt.normal_flow_lpm
+    ratio = float(h.get("low_flow_ratio", 0.6))
+    if normal and not any(f.type == "pump_dry_run" for f in findings):
+        flow_now = None
+        if latest.pump_on and rt.pump_on_since and _seconds(now, rt.pump_on_since) >= PUMP_FLOW_GRACE_S + 10:
+            w = [r for r in rt.window(10, now) if r.pump_on]
+            flow_now = sum(r.flow_lpm for r in w) / len(w) if w else None
+            started = rt.pump_on_since
+        elif (not latest.pump_on and ev and not newer_run and (ev.get("pump_seconds") or 0) >= 3
+              and (ev.get("liters") or 0) >= SHORT_RUN_NO_WATER_L):
+            flow_now = ev["liters"] / ev["pump_seconds"] * 60
+            started = ev["started_at"]
+        if flow_now is not None and p["min_flow_lpm"] <= flow_now < ratio * normal:
+            findings.append(Finding(
+                "pump_low_flow", started,
+                f"Lưu lượng bơm {flow_now:.2f} L/phút, chỉ {flow_now / normal * 100:.0f}% mức bình thường "
+                f"đã học ({normal:.2f} L/phút): tắc lọc/ống một phần, bơm yếu hoặc rò trước cảm biến",
+                {"flow_lpm": round(flow_now, 3), "normal_flow_lpm": normal, "ratio": round(flow_now / normal, 2)}))
+
     if not latest.pump_on:
         w = rt.window(p["leak_seconds"], now)
         if (len(w) >= 2 and _seconds(now, w[0].ts) >= p["leak_seconds"] * 0.6
@@ -188,6 +209,6 @@ def sensor_health(rt: DeviceRuntime, findings: list[Finding]) -> dict[str, str]:
         "dht11": "fault" if "dht_fault" in types or (latest and not latest.dht_ok) else "ok",
         "soil": "fault" if types & {"soil_sensor_fault", "soil_sensor_stuck", "soil_response_high"} else "ok",
         "flow": "fault" if types & {"flow_without_pump"} else "ok",
-        "pump": "fault" if types & {"pump_dry_run", "pump_overrun", "irrigation_ineffective"} else "ok",
+        "pump": "fault" if types & {"pump_dry_run", "pump_overrun", "irrigation_ineffective", "pump_low_flow"} else "ok",
         "mist": "fault" if types & {"mist_ineffective", "mist_overrun"} else "ok",
     }

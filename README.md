@@ -13,6 +13,11 @@ Hệ thống còn **dự báo** bao lâu nữa đất khô tới ngưỡng tư�
 monitor **forecast** (cây sắp thiếu nước, ESP32 sắp cạn bộ nhớ), **anomaly detection** (lượng nước, độ trễ lệnh,
 lượng bản tin) và có thể bật **Bits AI** để tự điều tra khi monitor báo động – xem [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
+Chế độ bơm **AI** (tab **AI tưới**): mô hình Ridge học tốc độ khô của đất từ dữ liệu của chính luống (đặc trưng tạo bằng
+Aggregation Pipeline), **dự báo độ ẩm đất 6 giờ tới**, ước tính lượng nước cây cần, **tự lập lịch tưới tối ưu** (vừa đủ nước,
+tránh giờ nóng), **học lại sau mỗi lần tưới** qua MongoDB Change Stream, đánh giá nguy cơ thiếu nước / stress nhiệt và theo dõi
+**độ tin cậy mô hình** trên Datadog (sai số dự báo so với thực tế sau 1 giờ).
+
 Tab **Báo cáo nước** trên web dùng **MongoDB Aggregation Pipeline** (`$dateTrunc`, `$densify`, `$fill`, `$setWindowFields`,
 `$derivative`) trên `irrigation_events` và collection time series `telemetry`: lít nước, số lần tưới, nước không tới gốc,
 tốc độ khô của đất theo ngày, trung bình 7 ngày, dự báo lít nước ngày mai và số ngày bể trữ còn đủ dùng.
@@ -26,7 +31,7 @@ ESP32 (DHT11, cảm biến đất, YF-S201, relay bơm, relay phun sương)     
                         FastAPI backend (ingest · luật phát hiện · điều khiển tự động · kiểm chứng)
                          │                    │ DogStatsD metrics + JSON logs + APM traces
                          ▼                    ▼
-                   MongoDB Atlas         Datadog Agent ──► Datadog: dashboard · 21 monitors (metric + log) · 2 SLO
+                   MongoDB Atlas         Datadog Agent ──► Datadog: dashboard · 26 monitors (metric + log) · 2 SLO
                    (time series)                              │ webhook khi monitor bắn/hồi phục
                          ▲                                    ▼
                     Web dashboard  ◄──────────────  /api/webhooks/datadog → incident trong MongoDB

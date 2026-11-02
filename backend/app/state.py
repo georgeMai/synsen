@@ -52,6 +52,15 @@ class DeviceRuntime:
     irrigation_settled_at: Optional[datetime] = None  # lúc lần tưới trước thấm xong (đo tốc độ khô sau mốc này)
     drying_rate_est: Optional[float] = None    # tốc độ khô gần nhất đo được (%/giây) – dự phòng khi tưới dồn dập
     drying_rate_at: Optional[datetime] = None
+    # AI tưới (ai.py)
+    ai_model: Optional[object] = None          # ml.RidgeModel đang dùng
+    ai_model_at: Optional[datetime] = None
+    ai_plan: Optional[dict] = None             # dự báo + lịch tưới mới nhất (cũng lưu trong collection forecasts)
+    ai_plan_at: Optional[datetime] = None
+    ai_plan_consumed: bool = False             # lịch tưới đã được thực hiện
+    normal_flow_lpm: Optional[float] = None    # lưu lượng bơm bình thường học từ các lần tưới
+    ml_errors: deque = field(default_factory=lambda: deque(maxlen=500))   # (lúc, |sai số dự báo 1 giờ|)
+    ml_mae: Optional[float] = None
 
     def add(self, r: Reading) -> None:
         prev = self.readings[-1] if self.readings else None

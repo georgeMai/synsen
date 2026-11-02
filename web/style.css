@@ -251,3 +251,14 @@ table.metrics tr.grp td { font-weight: 600; background: var(--surface-2); paddin
 table.water td, table.water th { white-space: nowrap; }
 table.water tr.warn td { background: color-mix(in srgb, var(--serious) 10%, var(--surface)); }
 details.pipeline pre { font-size: 11.5px; max-height: 360px; overflow: auto; background: var(--surface-2); padding: 10px; border-radius: 8px; }
+
+/* tab AI tưới */
+.risk { font-size: 22px; font-weight: 650; }
+.risk.ok { color: var(--good); }
+.risk.warning { color: color-mix(in srgb, var(--warning) 75%, var(--text)); }
+.risk.critical { color: var(--critical); }
+.risk.idle { color: var(--muted); }
+.ai-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; margin: 8px 0 12px; }
+.ai-cols h3 { font-size: 14px; margin: 10px 0 6px; }
+#tab-ai .chip { margin-left: 6px; }
+#tab-ai p button { padding: 2px 8px; font-size: 12px; }

@@ -1,6 +1,7 @@
 """Xử lý thông điệp MQTT: lưu MongoDB, cập nhật trạng thái chạy, phát metric Datadog."""
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 import time
@@ -168,6 +169,10 @@ async def _finish_irrigation(rt, run, soil_after, cfg: dict) -> dict:
     doc = {"_id": ev["irrigation_id"], "device_id": rt.device_id, "site": rt.site, "zone": rt.zone,
            "source": rt.source, **ev, "created_at": utcnow()}
     await db.irrigation_events.replace_one({"_id": doc["_id"]}, doc, upsert=True)
+    rt.ai_plan_at = None                 # lần tưới đã thấm xong -> AI lập lại kế hoạch với độ ẩm mới
+    if not db.change_streams:            # Atlas: Change Stream trên irrigation_events lo việc học lại (ai.py)
+        from .ai import on_irrigation_recorded
+        asyncio.create_task(on_irrigation_recorded(rt.device_id, "irrigation_event"))
     rt.last_irrigation = ev
     if ev["status"] in ASSESSED:
         rt.last_assessed = ev

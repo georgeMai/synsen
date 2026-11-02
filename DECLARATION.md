@@ -18,6 +18,11 @@ Không sao chép code mẫu nào ngoài cách dùng API theo tài liệu chính 
 - Thiết bị `sim-*` là **dữ liệu giả lập**, do `simulator/simulator.py` sinh từ mô hình vật lý đơn giản và có thể tiêm lỗi.
   Dữ liệu giả lập luôn được đánh dấu `source: "sim"` (MongoDB) / `source:sim` (Datadog) và hiển thị nhãn “giả lập” trên web.
 
+## Mô hình AI/ML trong sản phẩm
+- Mô hình dự báo (Ridge regression), bộ lập lịch tối ưu và điểm nguy cơ được **tự cài đặt** trong `backend/app/ml.py`
+  (không dùng mô hình huấn luyện sẵn, không dùng thư viện ML bên ngoài). Mô hình chỉ học từ dữ liệu cảm biến của chính
+  thiết bị (thật hoặc giả lập) lưu trong MongoDB.
+
 ## Công cụ AI
 - **Claude (Anthropic)** hỗ trợ phân tích yêu cầu đề bài, thiết kế kiến trúc và data model, viết bản nháp firmware,
   backend, web, simulator, cấu hình Datadog và tài liệu. Đội đã xem lại, chạy thử trên phần cứng thật, chỉnh sửa và chịu trách nhiệm toàn bộ mã nguồn.

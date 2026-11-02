@@ -68,7 +68,7 @@ open ──(Tiếp nhận)──► acknowledged ──(Đã xử lý)──► 
 - Khi dữ liệu không còn thể hiện lỗi, timeline ghi `condition_cleared`, nhưng incident **không tự đóng**. Người vận hành vẫn phải xác nhận.
 - **Kiểm chứng theo từng loại lỗi:**
   - Bơm chạy khô: gỡ khoá, chạy thử bơm 45 giây, yêu cầu lưu lượng trung bình ≥ 0.3 L/phút.
-  - Phun sương: chạy thử 120 giây, yêu cầu độ ẩm tăng ≥ 3%.
+  - Phun sương: chạy thử 120 giây (`VERIFY_MIST_SECONDS`), đạt khi **độ ẩm tăng ≥ 1% HOẶC nhiệt độ giảm ≥ 1°C** (`mist.verify_rise_pct`, `mist.verify_temp_drop_c`, sửa được trong tab Cài đặt ngưỡng). Phần trời tự ẩm lên / tự mát đi (xu hướng 3 phút trước khi chạy thử, hồi quy tuyến tính) được trừ ra, để thời tiết thay đổi không bị tính là công của máy phun sương.
   - Cảm biến: cần N lần đọc liên tiếp hợp lệ.
   - Lệnh: gửi lệnh thử và chờ ack.
   - Mất kết nối: phải có dữ liệu mới.
@@ -215,6 +215,32 @@ docker compose exec backend python -m app.check_water_report            # so pip
 docker compose exec backend python -m app.check_water_report --explain sim-01   # pipeline có dùng index không
 ```
 
+### AI tưới – dự báo 6 giờ, lập lịch tối ưu, học sau mỗi lần tưới (`backend/app/ml.py`, `ai.py`, tab web “AI tưới”)
+
+**Bài toán:** AI quyết định **khi nào tưới và tưới bao nhiêu** – kết hợp ML (dự báo) với tối ưu hoá và điều khiển tự động.
+Bật bằng chế độ bơm **AI** (bên cạnh Tự động / Thủ công / Tắt hẳn).
+
+| Chức năng | Cách làm | Ở đâu |
+|---|---|---|
+| Tạo đặc trưng ML | **Aggregation Pipeline** trên `telemetry` (time series): khung 10 phút (`$dateTrunc binSize`), `$setWindowFields` cửa sổ **quá khứ** (trung bình trượt 1 giờ, `$derivative` 30 phút, có tưới trong 60 phút trước) và **tương lai** (`$derivative` 60 phút **sau** = nhãn tốc độ khô thật), VPD tính bằng `$exp`, giờ trong ngày bằng `$hour`/`$sin`/`$cos` | `ai.feature_pipeline` |
+| Dự báo độ ẩm đất 6 giờ | **Ridge regression** (tự cài, không numpy): tốc độ khô = f(VPD, độ ẩm đất, giờ trong ngày); mô phỏng từng bước 10 phút; thời tiết tương lai = hiện tại + chênh lệch theo giờ (hồ sơ `$group $hour` 7 ngày) | `ml.train`, `ml.simulate`, `ai.profile_pipeline` |
+| Đánh giá mô hình | chia theo thời gian 70/30, MAE so với mốc “trung bình”, `skill = 1 − MAE/MAE_mốc`; chưa đủ 30 mẫu → dùng tốc độ khô đo trực tiếp | `ml.train` |
+| Ước tính nước cây cần | lít = (ngưỡng đủ ẩm − độ ẩm dự báo lúc tưới) ÷ phản hồi đất đã học (%/L, `irrigation_events`) | `ml.plan_irrigation` |
+| Lập lịch tưới tối ưu | thử mọi thời điểm (bước 10 phút) khi đất ≤ ngưỡng khô + 8%, cùng phương án “không tưới”; **chi phí = nước bay hơi (tưới lúc nóng) + 0,05 × phút đất dưới ngưỡng khô** → chọn nhỏ nhất | `ml.plan_irrigation` |
+| Điều khiển | chế độ AI thực thi lịch (bật bơm đúng số giây = số lít ÷ lưu lượng đã học); an toàn: tắt khi đủ ẩm / quá `max_seconds`, tưới ngay khi đất < ngưỡng khô − 5%, chưa có kế hoạch → luật ngưỡng | `control.decide_pump_ai` |
+| Học sau mỗi lần tưới | **Change Stream** trên `irrigation_events` (Atlas) → học lại mô hình + cập nhật lưu lượng bình thường; %/L tự cập nhật; học lại định kỳ 6 giờ | `ai.watch_irrigation_events` |
+| Tối ưu nước | lượng vừa đủ (không chạy cố định `max_seconds`), tránh giờ nóng; web so sánh với tưới theo ngưỡng (nước bay hơi, phút thiếu nước) | tab AI tưới |
+| Bất thường | rò / relay kẹt (`flow_without_pump`), tắc hoàn toàn / chạy khô (`pump_dry_run`), **tắc một phần / bơm yếu** (`pump_low_flow`: lưu lượng < 60% mức bình thường đã học), nước không tới gốc (z-score) | `rules.py` |
+| Nguy cơ | **thiếu nước** (đất xuống dưới ngưỡng khô trong 6 giờ, cao hơn nếu bơm bị khoá/OFF) và **stress nhiệt** (nhiệt độ dự báo vượt ngưỡng nóng, thời gian nóng, đất thiếu nước) – điểm 0–1 | `ml.risks` |
+| Độ tin cậy mô hình | mỗi dự báo (lưu `forecasts`) được đối chiếu với độ ẩm thật sau 1 giờ → sai số, MAE 24 giờ → Datadog `ml.forecast_mae` + monitor | `ai.evaluate_forecasts` |
+
+**Collection mới:**
+- `models`: mỗi lần học một document `{device_id, trained_at, trigger: change_stream|irrigation_event|schedule|manual, n_samples, mae_pct_per_hour, baseline_mae_pct_per_hour, skill, model: {weights, intercept, means, stds}}`, index `{device_id, trained_at}`.
+- `forecasts`: mỗi 5 phút `{device_id, created_at, method, points[37], with_plan[], plan, risks, soil_1h, soil_6h, evaluated, actual_1h, error_1h}`, **TTL `expireAfterSeconds` 3 ngày** (`FORECAST_TTL_DAYS`), index `{device_id, evaluated, created_at}` cho bước đối chiếu.
+
+Lý do chọn Ridge thay vì XGBoost/LightGBM/SVR: dữ liệu vài ngày chỉ có vài trăm khung 10 phút không tưới; mô hình tuyến tính ít học thuộc,
+ngoại suy được và mỗi hệ số giải thích được. Khi có nhiều tháng dữ liệu từ nhiều luống sẽ chuyển sang GBM (hướng phát triển).
+
 ## 4. Datadog observability
 
 ### Custom metrics (DogStatsD, tiền tố `agriguard.`)
@@ -242,17 +268,23 @@ Tag chung: `env`, `service`, `device_id`, `site`, `zone`, `source:real|sim`.
 | | `irrigation.events` (tag `status`, `reason`) | count | |
 | Dự báo | `soil.drying_pct_per_hour`, `soil.minutes_to_dry` | gauge | backend dự báo bao lâu nữa đất khô tới ngưỡng tưới |
 | | `water.predicted_liters_per_day`, `irrigation.predicted_liters_next` | gauge | = tốc độ khô ÷ phản hồi đất đã học |
+| AI tưới | `ai.soil_forecast_1h`, `ai.soil_forecast_6h`, `ai.minutes_to_dry` | gauge | dự báo độ ẩm đất (không tưới) |
+| | `ai.plan.liters`, `ai.plan.minutes_until` | gauge | lịch tưới tối ưu |
+| | `ai.risk.water_shortage`, `ai.risk.heat_stress` | gauge 0–1 | nguy cơ |
+| Độ tin cậy ML | `ml.forecast_error_abs` (tag `method`), `ml.forecast_mae` | gauge | dự báo 1 giờ so với thực tế |
+| | `ml.model.validation_mae`, `ml.model.skill`, `ml.model.samples`, `ml.model.age_hours` | gauge | |
+| | `ml.retrains` (tag `trigger`, `status`), `ml.change_stream_events` | count | học lại sau mỗi lần tưới |
 | Sự cố | `incident.open` (tag `type`, `severity`) | gauge | |
 | | `incident.opened`, `incident.resolved`, `incident.verification_failed` | count | |
 | | `incident.mttd_seconds`, `incident.mttr_seconds`, `incident.time_to_ack_seconds` | histogram | |
 
 Ngoài custom metrics còn có:
-- **APM:** `ddtrace-run` tự trace FastAPI và pymongo, nối với log qua `dd.trace_id`.
+- **APM:** `ddtrace-run` tự trace FastAPI và pymongo, nối với log qua `dd.trace_id`; span riêng `agriguard.ml.train`, `agriguard.ml.plan` (thời gian học / lập kế hoạch, kèm truy vấn pipeline MongoDB bên trong).
 - **Logs:** JSON từ backend, simulator và Mosquitto, có trường `device_id`, `incident_id`, `command_id`.
 - **HTTP check** `/api/health` và **TCP check** broker 1883.
 - **Datadog events:** mỗi incident mở hoặc đóng sinh một event trên timeline Datadog.
 
-### Monitors (20, tag `app:agriguard`, định nghĩa trong `datadog/definitions.py`)
+### Monitors (26, tag `app:agriguard`, định nghĩa trong `datadog/definitions.py`)
 
 | Monitor | Truy vấn (rút gọn) | Loại incident |
 |---|---|---|
@@ -272,6 +304,11 @@ Ngoài custom metrics còn có:
 | Độ trễ ack bất thường (**anomaly**) | `anomalies(avg: command.ack_latency_ms, 'basic', 3)` | (chỉ thông báo) |
 | Bản tin bất thường (**anomaly**) | `anomalies(sum: ingest.messages, 'basic', 2)` | (chỉ thông báo) |
 | Backend / broker không phản hồi | service check `http.can_connect`, `tcp.can_connect` | (chỉ thông báo) |
+| Lưu lượng bơm giảm (tắc một phần / bơm yếu) | `fault.active{fault:pump_low_flow} >= 1` | `pump_low_flow` |
+| **Mô hình AI kém tin cậy** | `avg(last_1h): ml.forecast_mae by device_id > 5` (cảnh báo 3) | (chỉ thông báo) |
+| Mô hình AI không được học lại | `max(last_30m): ml.model.age_hours > 24` | (chỉ thông báo) |
+| Nguy cơ thiếu nước / stress nhiệt (AI) | `min(last_15m): ai.risk.water_shortage` hoặc `ai.risk.heat_stress >= 0.7` | (chỉ thông báo) |
+| Liên tục báo đã sửa khi chưa sửa (**log**) | `logs("Incident verification failed").last("10m") > 3` | (chỉ thông báo) |
 
 Mọi monitor gắn `@webhook-agriguard`. Webhook gửi `transition`, `scope` (chứa `device_id`) và `tags` (chứa `incident_type`)
 về `/api/webhooks/datadog`. Backend mở hoặc gộp incident, lưu link monitor. Khi monitor hồi phục, backend chỉ ghi chú vào timeline, không tự đóng incident.

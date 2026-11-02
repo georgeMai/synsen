@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from .api import router
 from .config import settings
 from .db import db
+from .ai import ai_tick, load_models, watch_irrigation_events
 from .engine import bootstrap_runtime, control_tick, health_tick, run_forever
 from .ingest import handle_message
 from .logging_setup import setup_logging
@@ -33,10 +34,13 @@ log = logging.getLogger("agriguard")
 async def lifespan(app: FastAPI):
     await db.connect()
     await bootstrap_runtime()
+    await load_models()
     tasks = [
         asyncio.create_task(bridge.start(handle_message), name="mqtt"),
         asyncio.create_task(run_forever("health", health_tick, settings.health_interval_s), name="health"),
         asyncio.create_task(run_forever("control", control_tick, settings.control_interval_s), name="control"),
+        asyncio.create_task(run_forever("ai", ai_tick, settings.ai_interval_s), name="ai"),
+        asyncio.create_task(watch_irrigation_events(), name="change-stream"),
     ]
     await resume_pending()
     log.info("AgriGuard backend started", extra={"site": settings.site, "env": settings.env})

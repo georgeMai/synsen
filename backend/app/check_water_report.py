@@ -1,4 +1,5 @@
-"""Kiểm tra 2 pipeline báo cáo nước trên MongoDB THẬT (Atlas) – so với cách tính Python tương đương.
+"""Kiểm tra các pipeline (báo cáo nước + đặc trưng ML / hồ sơ thời tiết của AI tưới) trên MongoDB THẬT (Atlas)
+– so với cách tính Python tương đương.
 
     docker compose exec backend python -m app.check_water_report
 
@@ -44,7 +45,7 @@ def seed(db, start):
                            "status": "low_response" if bad else "normal",
                            "ratio_pct_per_l": -0.5 if bad else round(10 + rnd.uniform(-0.5, 0.5), 2)})
         tele.append({"ts": t, "meta": {"device_id": DEV}, "soil_moisture_pct": round(soil, 2), "soil_ok": True,
-                     "air_temp_c": round(temp, 1), "pump_on": pump, "mist_on": False, "flow_lpm": 1.5 if pump else 0.0})
+                     "air_temp_c": round(temp, 1), "air_humidity_pct": round(90 - 2.5 * (temp - 27), 1), "pump_on": pump, "mist_on": False, "flow_lpm": 1.5 if pump else 0.0})
         t += timedelta(minutes=5)
     db.telemetry.insert_many(tele)
     db.irrigation_events.insert_many(events)
@@ -97,6 +98,29 @@ def main():
             f = lambda v, n=2: "–" if v is None else f"{v:.{n}f}"
             print(f"{day:<11}{a['runs']:>4}{f(a['liters']):>8}{f(a['wasted_liters']):>9}{f(a.get('liters_avg7')):>8}"
                   f"{f(-s['slope_avg'] if s.get('slope_avg') is not None else None):>9}{f(s.get('temp_avg'), 1):>7}")
+        # ---- pipeline tạo đặc trưng ML + hồ sơ thời tiết (ai.py) ----
+        from .ai import feature_pipeline, profile_pipeline, py_features, py_profile
+        raw = list(db.telemetry.find({}, {"_id": 0}).sort("ts", 1))
+        feats = list(db.telemetry.aggregate(feature_pipeline(DEV, start, end)))
+        py_f = py_features([d for d in raw if d.get("soil_ok")])
+        by_ts = {f["ts"].replace(tzinfo=None): f for f in py_f}
+        miss = [f for f in feats if f["ts"].replace(tzinfo=None) not in by_ts]
+        print(f"Đặc trưng ML: pipeline {len(feats)} dòng, Python {len(py_f)} dòng, lệch {len(miss)}")
+        if abs(len(feats) - len(py_f)) > 0 or miss:
+            bad += 1
+        for f in feats:
+            g = by_ts.get(f["ts"].replace(tzinfo=None))
+            if g:
+                for k in ("vpd", "soil", "hour_sin", "hour_cos", "target"):
+                    if abs(f[k] - g[k]) > 1e-3 * max(1.0, abs(g[k])):
+                        print("  KHÁC đặc trưng", f["ts"], k, f[k], g[k]); bad += 1
+                        break
+        prof = list(db.telemetry.aggregate(profile_pipeline(DEV, start)))
+        pyp = {r["_id"]: r for r in py_profile(raw)}
+        for r in prof:
+            if not close(r["temp"], pyp.get(r["_id"], {}).get("temp")):
+                print("  KHÁC hồ sơ giờ", r["_id"]); bad += 1
+        print(f"Hồ sơ thời tiết theo giờ: {len(prof)} giờ")
         print("KẾT QUẢ:", "PIPELINE KHỚP PYTHON ✔" if not bad else f"{bad} chỗ khác ✘")
     finally:
         client.drop_database(name)

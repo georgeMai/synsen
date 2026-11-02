@@ -7,6 +7,7 @@
   python scripts/dir_drill.py dht_fail           # cảm biến DHT11 hỏng
   python scripts/dir_drill.py no_ack             # thiết bị không xác nhận lệnh
   python scripts/dir_drill.py hose_off           # ống tưới tuột: có nước chảy nhưng đất không ẩm lên
+  python scripts/dir_drill.py clog               # tắc lọc / bơm yếu: lưu lượng thấp hơn mức bình thường đã học
   python scripts/dir_drill.py all
 
 Tuỳ chọn: --base http://localhost:8000  --device sim-01  --token <ADMIN_TOKEN>
@@ -30,6 +31,7 @@ SCENARIOS = {
     "dht_fail": ("dht_fault", None, "cắm lại dây DATA của DHT11"),
     "no_ack": ("command_timeout", "send_command", "khởi động lại ESP32"),
     "hose_off": ("irrigation_ineffective", "irrigate", "cắm lại ống tưới vào gốc cây"),
+    "clog": ("pump_low_flow", "irrigate", "vệ sinh lọc / thông ống bơm"),
 }
 
 SIM_IRRIGATION = {"settle_seconds": 30, "test_seconds": 12}   # thiết bị giả lập thấm nhanh -> rút ngắn để demo
@@ -107,7 +109,7 @@ def run(api: Api, device: str, fault: str) -> bool:
     if fault == "mist_empty":
         api("PUT", "settings", {"mist": {**api("GET", "settings")["mist"], "check_minutes": 1}})
         log("Giảm check_minutes của phun sương xuống 1 phút để demo nhanh")
-    if fault == "hose_off":
+    if fault in ("hose_off", "clog"):
         api("PUT", "settings", {"irrigation": SIM_IRRIGATION})
         api("PUT", f"devices/{device}/actuators/mist/mode", {"mode": "OFF"})   # phun sương làm nhiễu phép đo
         api("PUT", f"devices/{device}/actuators/pump/mode", {"mode": "MANUAL"})
@@ -148,13 +150,13 @@ def run(api: Api, device: str, fault: str) -> bool:
 
     # 4a. RESOLVE khi CHƯA sửa (trừ offline: chưa sửa thì không thể có dữ liệu) -> phải thất bại
     ok = True
-    if fault in ("dry_run", "mist_empty", "dht_fail", "hose_off"):
+    if fault in ("dry_run", "mist_empty", "dht_fail", "hose_off", "clog"):
         api("POST", f"incidents/{inc['_id']}/resolve", {"actor": "drill", "note": "Báo đã xử lý (nhưng chưa sửa thật)"})
         res = wait(lambda: (lambda i: i if i["status"] != "verifying" else None)(api("GET", f"incidents/{inc['_id']}")),
                    300, label="kiểm chứng (chưa sửa)")
         failed = res["status"] == "acknowledged"
         log(f"[RESOLVE – chưa sửa] kiểm chứng {'THẤT BẠI đúng như mong đợi' if failed else 'ĐẠT (SAI!)'}: "
-            f"{res['timeline'][-1]['note']}")
+            f"{_last_note(res)}")
         ok &= failed
 
     # 4b. Sửa lỗi rồi RESOLVE -> phải đạt
@@ -165,10 +167,16 @@ def run(api: Api, device: str, fault: str) -> bool:
     res = wait(lambda: (lambda i: i if i["status"] != "verifying" else None)(api("GET", f"incidents/{inc['_id']}")),
                300, label="kiểm chứng (đã sửa)")
     passed = res["status"] == "resolved"
-    log(f"[RESOLVE] {'ĐÃ ĐÓNG' if passed else 'CHƯA ĐÓNG'} – {res['timeline'][-1]['note']} (MTTR {res.get('mttr_s')}s)")
+    log(f"[RESOLVE] {'ĐÃ ĐÓNG' if passed else 'CHƯA ĐÓNG'} – {_last_note(res)} (MTTR {res.get('mttr_s')}s)")
     for act in ("pump", "mist"):
         api("PUT", f"devices/{device}/actuators/{act}/mode", {"mode": "AUTO"})
     return ok and passed
+
+
+def _last_note(inc: dict) -> str:
+    """Bằng chứng kiểm chứng (bỏ qua các mục "đã gửi sang Datadog" ở cuối dòng thời gian)."""
+    tl = [t for t in inc.get("timeline", []) if t.get("actor") != "datadog"]
+    return tl[-1]["note"] if tl else ""
 
 
 def main() -> None:
