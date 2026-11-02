@@ -181,6 +181,8 @@ class IncidentService:
         dd = {k: payload.get(k) for k in ("monitor_id", "link", "title") if payload.get(k)}
         dd["last_transition"] = transition
         if transition in ("triggered", "re-triggered", "warn", "no data"):
+            if type_ == "soil_response_high" and not (await db.get_settings())["irrigation"].get("detect_high_response", True):
+                return {"ignored": "soil_response_high_disabled"}       # cảnh báo đã tắt trong Cài đặt
             inc, created = await self.open_or_update(
                 device_id, type_, payload.get("title") or "Datadog monitor triggered",
                 detected_by="datadog", datadog=dd, context={"scope": payload.get("scope")},

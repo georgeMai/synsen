@@ -194,7 +194,8 @@ def evaluate(rt: DeviceRuntime, cfg: dict, now: datetime) -> list[Finding]:
 
     # --- Phản hồi đất trên mỗi lít nước (lần tưới gần nhất đã chấm điểm) ---
     ev = rt.last_assessed
-    if ev and ev["status"] in ("low_response", "high_response"):
+    high_on = cfg["irrigation"].get("detect_high_response", True)
+    if ev and (ev["status"] == "low_response" or (ev["status"] == "high_response" and high_on)):
         ctx = {k: ev.get(k) for k in ("liters", "rise_pct", "ratio_pct_per_l", "baseline_pct_per_l", "baseline_n",
                                      "zscore", "irrigation_id")}
         findings.append(Finding("irrigation_ineffective" if ev["status"] == "low_response" else "soil_response_high",

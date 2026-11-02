@@ -69,6 +69,13 @@ async def health_tick() -> None:
                     and inc["status"] != "verifying"):
                 await incidents.mark_condition_cleared(inc)
 
+    # Cảnh báo "đất ẩm lên bất thường" đã TẮT trong Cài đặt (chậu nhỏ) -> đóng các sự cố loại này còn mở
+    if not cfg["irrigation"].get("detect_high_response", True):
+        for inc in active:
+            if inc["type"] == "soil_response_high" and inc["status"] != "verifying":
+                await incidents.mark_resolved(inc["_id"], "Cảnh báo “đất ẩm lên bất thường” đã tắt trong Cài đặt ngưỡng "
+                                                          "(chậu nhỏ, đất ẩm lên nhanh) – đóng sự cố")
+
     # Lệnh không được xác nhận
     for cmd in await commands.check_timeouts():
         if cmd.get("reason") == "verification":

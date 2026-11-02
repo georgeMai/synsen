@@ -38,8 +38,15 @@ def test_water_not_reaching_roots_is_low_response():
     assert ev["zscore"] <= -3
 
 
+def test_high_response_ignored_when_disabled():
+    cfg = deep_merge(CFG, {"irrigation": {"detect_high_response": False}})
+    ev = assess(run(), soil_after=60.0, history=HISTORY, cfg=cfg)
+    assert ev["status"] == "normal" and ev["reason"] == "high_response_ignored" and ev["zscore"] >= 3
+
+
 def test_sensor_flooded_is_high_response():
-    ev = assess(run(), soil_after=60.0, history=HISTORY, cfg=CFG)   # 40 %/L
+    cfg = deep_merge(CFG, {"irrigation": {"detect_high_response": True}})
+    ev = assess(run(), soil_after=60.0, history=HISTORY, cfg=cfg)   # 40 %/L
     assert ev["status"] == "high_response"
 
 
@@ -154,3 +161,15 @@ def test_back_to_back_irrigation_uses_last_known_drying_rate():
         IrrigationTracker.on_reading(rt, r, prev, 10.0, prev.flow_total if prev else None, CFG)
         prev = r
     assert rt.irrigation.drying_per_s == 0.04
+
+
+def test_rule_skips_high_response_when_disabled():
+    rt = DeviceRuntime("sim-01")
+    rt.add(Reading(ts=T0, soil_moisture_pct=50, air_temp_c=28, air_humidity_pct=60))
+    rt.last_seen, rt.online = T0, True
+    rt.last_assessed = {"status": "high_response", "started_at": T0, "liters": 0.05, "rise_pct": 9,
+                        "ratio_pct_per_l": 180, "baseline_pct_per_l": 60, "zscore": 4.2}
+    off = deep_merge(CFG, {"irrigation": {"detect_high_response": False}})
+    on = deep_merge(CFG, {"irrigation": {"detect_high_response": True}})
+    assert "soil_response_high" not in {f.type for f in evaluate(rt, off, T0)}
+    assert "soil_response_high" in {f.type for f in evaluate(rt, on, T0)}
