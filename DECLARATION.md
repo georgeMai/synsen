@@ -1,7 +1,7 @@
 # Khai báo mã nguồn tái sử dụng, dữ liệu và công cụ AI
 
 ## Mã nguồn & thư viện bên thứ ba
-Toàn bộ mã trong repo được viết trong thời gian build (17–31/10/2026). Các thư viện mã nguồn mở dùng qua trình quản lý gói gồm:
+Toàn bộ mã trong repo được viết trong thời gian build (17–03/11/2026). Các thư viện mã nguồn mở dùng qua trình quản lý gói gồm:
 
 | Thành phần | Thư viện | Giấy phép |
 |---|---|---|
