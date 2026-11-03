@@ -19,7 +19,6 @@ from .db import db, utcnow
 from .incidents import incidents
 from .irrigation import REASONS, describe
 from .ingest import latency_p95
-from .rules import PUMP_FLOW_GRACE_S
 from .state import runtime
 
 log = logging.getLogger(__name__)
@@ -54,6 +53,11 @@ async def _verify_online(inc: dict, cfg: dict) -> Result:
 
 
 async def _verify_pump_flow(inc: dict, cfg: dict) -> Result:
+    """Chạy thử bơm pump.verify_seconds giây (mặc định 5) rồi đo lưu lượng.
+
+    Lần chạy ngắn chỉ có 1–2 bản tin telemetry (5 giây/lần) nên lưu lượng được tính từ BỘ ĐẾM LÍT của thiết bị
+    (flow_liters_total, YF-S201): lít đếm được ÷ thời gian chạy. Không có bộ đếm thì lấy trung bình flow_lpm.
+    """
     dev = inc["device_id"]
     rt = runtime.get(dev)
     if not _fresh(dev):
@@ -62,26 +66,41 @@ async def _verify_pump_flow(inc: dict, cfg: dict) -> Result:
     if rt.latest and rt.latest.pump_lockout:
         await commands.send(dev, "pump", "clear_lockout", reason="verification", actor="system")
         await asyncio.sleep(2)
-    test_s = settings.verify_pump_seconds
+    test_s = int(p.get("verify_seconds", 5))
     await incidents.add_note(inc["_id"], "system", "verification_started",
-                             f"Chạy thử bơm {test_s} giây và đo lưu lượng")
+                             f"Chạy thử bơm {test_s} giây và đo lưu lượng (bộ đếm lít của cảm biến)")
+    total0 = rt.latest.flow_total if rt.latest else None
     started = utcnow()
-    await commands.send(dev, "pump", "on", duration_s=test_s + 5, reason="verification", actor="system")
-    await asyncio.sleep(test_s)
-    window = [r for r in rt.readings
-              if r.ts >= started and r.pump_on and (r.ts - started).total_seconds() >= PUMP_FLOW_GRACE_S]
+    await commands.send(dev, "pump", "on", duration_s=test_s, reason="verification", actor="system")
+
+    def finished() -> bool:
+        ons = [r for r in rt.readings if r.ts >= started and r.pump_on]
+        return bool(ons) and any(r.ts > ons[0].ts and not r.pump_on for r in rt.readings)
+
+    await _wait_for(finished, test_s + 15, interval=0.5)
+    await asyncio.sleep(1.5)                       # bản tin cuối (bơm tắt) mang bộ đếm lít sau cùng
     await commands.send(dev, "pump", "off", reason="verification", actor="system")
-    if not window:
-        return False, "Không có dữ liệu bơm đang chạy trong lúc kiểm tra (lệnh không thực hiện?)"
-    avg = sum(r.flow_lpm for r in window) / len(window)
+    ons = [r for r in rt.readings if r.ts >= started and r.pump_on]
+    if not ons:
+        return False, "Không thấy bơm chạy trong lúc kiểm tra (lệnh không thực hiện?)"
+    if any(r.pump_lockout for r in rt.readings if r.ts >= started):
+        return False, "Thiết bị lại tự khoá bơm vì không có dòng chảy"
+    total1 = rt.latest.flow_total if rt.latest else None
+    if total0 is not None and total1 is not None and total1 >= total0:
+        liters = total1 - total0
+        avg = liters / test_s * 60
+        how = f"{liters:.3f} L trong {test_s} giây = {avg:.2f} L/phút"
+    else:
+        avg = sum(r.flow_lpm for r in ons) / len(ons)
+        how = f"lưu lượng trung bình {avg:.2f} L/phút"
     if inc["type"] == "pump_low_flow" and rt.normal_flow_lpm:
         need = float(cfg["health"].get("low_flow_ratio", 0.6)) * rt.normal_flow_lpm
         if avg >= need:
-            return True, f"Chạy thử bơm: lưu lượng {avg:.2f} L/phút, đạt ≥ {need:.2f} (mức bình thường {rt.normal_flow_lpm:.2f})"
-        return False, f"Chạy thử bơm: lưu lượng chỉ {avg:.2f} L/phút, cần ≥ {need:.2f} L/phút"
-    if avg >= p["min_flow_lpm"] and not window[-1].pump_lockout:
-        return True, f"Chạy thử bơm: lưu lượng trung bình {avg:.2f} L/phút (≥ {p['min_flow_lpm']})"
-    return False, f"Chạy thử bơm: lưu lượng trung bình chỉ {avg:.2f} L/phút"
+            return True, f"Chạy thử bơm: {how}, đạt ≥ {need:.2f} (mức bình thường {rt.normal_flow_lpm:.2f})"
+        return False, f"Chạy thử bơm: {how}, cần ≥ {need:.2f} L/phút"
+    if avg >= p["min_flow_lpm"]:
+        return True, f"Chạy thử bơm: {how} (≥ {p['min_flow_lpm']})"
+    return False, f"Chạy thử bơm: {how} – vẫn không có nước"
 
 
 async def _verify_no_leak(inc: dict, cfg: dict) -> Result:

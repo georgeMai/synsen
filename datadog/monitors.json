@@ -26,7 +26,7 @@
     "name": "[AgriGuard] Bơm chạy khô / tắc ống",
     "type": "query alert",
     "query": "max(last_1m):max:agriguard.fault.active{fault:pump_dry_run} by {device_id} >= 1",
-    "message": "{{#is_alert}}🚨 **Bơm chạy khô / tắc ống** trên `{{device_id.name}}`\n\n**Điều tra:** So sánh `agriguard.pump.state` với `agriguard.flow.rate`; xem lệnh bơm trong log (command_id).\n\n**Khắc phục:** Châm nước vào bể / thông ống hút, sau đó bấm “Đã xử lý” – hệ thống sẽ chạy thử bơm 45 giây.{{/is_alert}}\n{{#is_recovery}}✅ Bơm chạy khô / tắc ống – tín hiệu đã trở lại bình thường. Xác nhận khắc phục trên web AgriGuard để hệ thống kiểm chứng và đóng sự cố.{{/is_recovery}}\n\nDashboard: AgriGuard – IoT Irrigation Operations @webhook-agriguard",
+    "message": "{{#is_alert}}🚨 **Bơm chạy khô / tắc ống** trên `{{device_id.name}}`\n\n**Điều tra:** So sánh `agriguard.pump.state` với `agriguard.flow.rate`; xem lệnh bơm trong log (command_id).\n\n**Khắc phục:** Châm nước vào bể / thông ống hút, sau đó bấm “Đã xử lý” – hệ thống sẽ chạy thử bơm 5 giây (pump.verify_seconds) và đo lưu lượng.{{/is_alert}}\n{{#is_recovery}}✅ Bơm chạy khô / tắc ống – tín hiệu đã trở lại bình thường. Xác nhận khắc phục trên web AgriGuard để hệ thống kiểm chứng và đóng sự cố.{{/is_recovery}}\n\nDashboard: AgriGuard – IoT Irrigation Operations @webhook-agriguard",
     "priority": 1,
     "tags": [
       "app:agriguard",

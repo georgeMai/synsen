@@ -146,7 +146,7 @@ Xem đầy đủ trong `.env.example`. Một số biến đáng chú ý:
 | `METRICS_ENABLED`, `DD_TRACE_ENABLED` | Bật gửi metrics/traces tới Datadog Agent |
 | `ADMIN_TOKEN` | Bảo vệ thao tác ghi trên web (nhập qua nút 🔑) |
 | `DATADOG_WEBHOOK_TOKEN` | Bí mật trong URL webhook |
-| `VERIFY_PUMP_SECONDS`, `VERIFY_MIST_SECONDS` | Thời gian chạy thử khi kiểm chứng khắc phục |
+| `VERIFY_MIST_SECONDS` | Thời gian chạy thử phun sương khi kiểm chứng khắc phục (bơm: cài đặt `pump.verify_seconds` trên web, mặc định 5 giây) |
 | `SIM_DEVICES`, `SIM_DAY_MINUTES` | Số thiết bị giả lập, độ dài một “ngày” mô phỏng |
 
 ## 6. Bảo mật & dữ liệu

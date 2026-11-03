@@ -32,7 +32,7 @@ và sự cố quay về trạng thái “Đã tiếp nhận”.
 **Resolve**
 1. Bấm “Tiếp nhận”. Đặt ống hút lại vào nước.
 2. Bấm “Đã xử lý – kiểm chứng”, ghi chú “Châm nước vào bể”.
-3. Hệ thống gửi `clear_lockout`, **chạy thử bơm 45 giây**, đo lưu lượng trung bình rồi tắt bơm.
+3. Hệ thống gửi `clear_lockout`, **chạy thử bơm 5 giây** (`pump.verify_seconds`, sửa trong tab Cài đặt ngưỡng), tính lưu lượng từ bộ đếm lít của YF‑S201 rồi tắt bơm.
 4. Lưu lượng ≥ 0.3 L/phút: incident **resolved**, ghi bằng chứng “lưu lượng trung bình 1.61 L/phút” và MTTR. Monitor Datadog về OK.
 5. Thử báo “đã xử lý” khi ống vẫn còn ngoài nước: kiểm chứng **thất bại** (“lưu lượng chỉ 0.00 L/phút”), sự cố vẫn mở.
 

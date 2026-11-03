@@ -67,7 +67,7 @@ open ──(Tiếp nhận)──► acknowledged ──(Đã xử lý)──► 
 - Mỗi cặp (thiết bị, loại lỗi) chỉ có một incident đang mở. Các nguồn phát hiện được gộp vào `detected_by`.
 - Khi dữ liệu không còn thể hiện lỗi, timeline ghi `condition_cleared`, nhưng incident **không tự đóng**. Người vận hành vẫn phải xác nhận.
 - **Kiểm chứng theo từng loại lỗi:**
-  - Bơm chạy khô: gỡ khoá, chạy thử bơm 45 giây, yêu cầu lưu lượng trung bình ≥ 0.3 L/phút.
+  - Bơm chạy khô / bơm yếu: gỡ khoá, chạy thử bơm 5 giây (`pump.verify_seconds`), lưu lượng = lít bộ đếm YF‑S201 đếm được ÷ thời gian chạy; yêu cầu ≥ 0.3 L/phút (bơm yếu: ≥ 60% mức bình thường đã học).
   - Phun sương: chạy thử 120 giây (`VERIFY_MIST_SECONDS`), đạt khi **độ ẩm tăng ≥ 1% HOẶC nhiệt độ giảm ≥ 1°C** (`mist.verify_rise_pct`, `mist.verify_temp_drop_c`, sửa được trong tab Cài đặt ngưỡng). Phần trời tự ẩm lên / tự mát đi (xu hướng 3 phút trước khi chạy thử, hồi quy tuyến tính) được trừ ra, để thời tiết thay đổi không bị tính là công của máy phun sương.
   - Cảm biến: cần N lần đọc liên tiếp hợp lệ.
   - Lệnh: gửi lệnh thử và chờ ack.
@@ -139,7 +139,7 @@ Index phụ: `{meta.device_id: 1, ts: -1}`.
     { "at": ISODate(), "actor": "datadog",  "action": "detected",            "note": "[Triggered] Bơm chạy khô" },
     { "at": ISODate(), "actor": "operator", "action": "acknowledged" },
     { "at": ISODate(), "actor": "operator", "action": "resolve_requested",   "note": "Châm nước vào bể" },
-    { "at": ISODate(), "actor": "system",   "action": "verification_started","note": "Chạy thử bơm 45 giây" },
+    { "at": ISODate(), "actor": "system",   "action": "verification_started","note": "Chạy thử bơm 5 giây và đo lưu lượng" },
     { "at": ISODate(), "actor": "system",   "action": "verified",            "note": "lưu lượng TB 1.61 L/phút" } ] }
 ```
 

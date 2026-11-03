@@ -64,6 +64,7 @@ class PumpSettings(BaseModel):
     min_flow_lpm: float = Field(ge=0.05, le=10)
     dry_run_seconds: int = Field(ge=15, le=600)
     leak_seconds: int = Field(ge=5, le=600)
+    verify_seconds: Optional[int] = Field(None, ge=3, le=120)
 
 
 class MistSettings(BaseModel):

@@ -329,7 +329,7 @@
   const SETTING_FIELDS = {
     pump: ["Bơm tưới", [["soil_dry_pct", "Đất khô – bắt đầu tưới (%)"], ["soil_target_pct", "Đất đủ ẩm – dừng tưới (%)"], ["hot_temp_c", "Trời nóng – tưới sớm (°C)"],
       ["max_seconds", "Chạy tối đa mỗi lần (giây)"], ["min_off_minutes", "Nghỉ tối thiểu (phút)"], ["min_flow_lpm", "Lưu lượng tối thiểu (L/phút)"],
-      ["dry_run_seconds", "Báo chạy khô sau (giây)"], ["leak_seconds", "Báo rò/kẹt relay sau (giây)"]]],
+      ["dry_run_seconds", "Báo chạy khô sau (giây)"], ["leak_seconds", "Báo rò/kẹt relay sau (giây)"], ["verify_seconds", "Chạy thử bơm khi kiểm chứng (giây)"]]],
     mist: ["Phun sương", [["hot_temp_c", "Trời nóng – bật phun (°C)"], ["temp_hysteresis_c", "Độ trễ nhiệt (°C)"], ["air_dry_pct", "Không khí khô – bật phun (%)"],
       ["air_target_pct", "Độ ẩm mục tiêu (%)"], ["air_max_pct", "Độ ẩm tối đa – không phun (%)"], ["max_minutes", "Chạy tối đa mỗi lần (phút)"],
       ["min_off_minutes", "Nghỉ tối thiểu (phút)"], ["check_minutes", "Kiểm tra hiệu quả sau (phút)"], ["min_rise_pct", "Độ ẩm phải tăng ít nhất (%)"],

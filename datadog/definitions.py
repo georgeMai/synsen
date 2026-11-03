@@ -83,7 +83,7 @@ MONITORS = [
         "pump_dry_run", 1,
         _msg("Bơm chạy khô / tắc ống",
              "So sánh `agriguard.pump.state` với `agriguard.flow.rate`; xem lệnh bơm trong log (command_id).",
-             "Châm nước vào bể / thông ống hút, sau đó bấm “Đã xử lý” – hệ thống sẽ chạy thử bơm 45 giây."),
+             "Châm nước vào bể / thông ống hút, sau đó bấm “Đã xử lý” – hệ thống sẽ chạy thử bơm 5 giây (pump.verify_seconds) và đo lưu lượng."),
         critical=1,
     ),
     _monitor(
