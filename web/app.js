@@ -615,16 +615,102 @@
         <pre>${esc(JSON.stringify(w.pipelines, null, 2))}</pre></details>`;
   }
   const AI_FEATURES = { temp: "Nhiệt độ", vpd: "VPD – độ khô không khí", soil: "Độ ẩm đất", hour_sin: "Giờ trong ngày (sin)", hour_cos: "Giờ trong ngày (cos)" };
+  // ---- "Học lại ngay": cửa sổ hiển thị từng bước (pipeline MongoDB → đặc trưng → Ridge → lưu → dự báo lại)
+  const COL = {
+    ts: "Thời điểm", t: "Khung", soil_moisture_pct: "Đất %", air_temp_c: "Nhiệt °C", air_humidity_pct: "Ẩm KK %",
+    pump_on: "Bơm", flow_lpm: "L/phút", soil: "Đất %", temp: "Nhiệt °C", hum: "Ẩm KK %", water: "Có tưới", mist: "Phun",
+    soil_ma1h: "TB trượt 1 giờ", slope_past: "Dốc 30′ trước (%/h)", slope_next: "Dốc 60′ sau (%/h)", wet_past: "Tưới 60′ trước",
+    wet_next: "Tưới 60′ sau", vpd: "VPD kPa", hour_sin: "Giờ sin", hour_cos: "Giờ cos", target: "Nhãn: khô %/giờ",
+  };
+  const fmtCell = (k, v) => {
+    if (v == null) return "–";
+    if (k === "ts" || k === "t") return fmtDateTime.format(new Date(v));
+    if (typeof v === "boolean") return v ? "có" : "–";
+    if ((k === "water" || k === "mist" || k === "wet_past" || k === "wet_next") && typeof v === "number") return v ? "có" : "–";
+    return typeof v === "number" ? num(v, Math.abs(v) < 10 ? 3 : 1) : esc(v);
+  };
+  function stepData(s) {
+    const d = s.data;
+    if (!d) return "";
+    let h = "";
+    if (d.error) h += `<p class="step-err">Lỗi: ${esc(d.error)}</p>`;
+    if (d.count != null) h += `<p><b class="step-count">${num(d.count, 0)}</b> ${esc(d.label || "")}${d.note ? ` · <span class="muted">${esc(d.note)}</span>` : ""}</p>`;
+    else if (d.note) h += `<p class="muted">${esc(d.note)}</p>`;
+    if (d.sample?.length) {
+      const keys = Object.keys(d.sample[0]);
+      h += `<div class="table-wrap"><table class="metrics step-table"><thead><tr>${keys.map((k) => `<th>${COL[k] || esc(k)}</th>`).join("")}</tr></thead>
+        <tbody>${d.sample.map((r) => `<tr>${keys.map((k) => `<td class="val">${fmtCell(k, r[k])}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+    }
+    if (s.key === "train" && d.status === "ok") {
+      h += `<p>${d.n_samples} mẫu (học ${d.n_train}, kiểm tra ${d.n_test}) · MAE <b>${num(d.mae_pct_per_hour, 3)} %/giờ</b> so với ${num(d.baseline_mae_pct_per_hour, 3)} nếu chỉ lấy trung bình · kỹ năng <b>${num(d.skill, 2)}</b></p>`;
+      if (d.weights) h += `<p class="small">Hệ số: ${Object.entries(d.weights).map(([k, v]) => `${esc(AI_FEATURES[k] || k)} <b>${v > 0 ? "+" : ""}${num(v, 3)}</b>`).join(" · ")}</p>`;
+    }
+    if (s.key === "save" && d.model_id) h += `<p>Đã ghi <code>${esc(d.model_id)}</code> vào collection <code>${esc(d.collection)}</code></p>`;
+    if (s.key === "plan" && d.soil_now != null) {
+      h += `<p>Độ ẩm đất ${num(d.soil_now, 1)}% → sau 1 giờ <b>${num(d.soil_1h, 1)}%</b> → sau 6 giờ <b>${num(d.soil_6h, 1)}%</b> (${d.method === "ridge" ? "mô hình Ridge" : "tốc độ khô đo trực tiếp"})</p>
+        <p>${d.decision === "irrigate" ? `Lịch tưới: <b>${num(d.liters, 2)} L</b> (${d.seconds} giây) lúc <b>${fmtTime.format(new Date(d.start_at)).slice(0, 5)}</b>` : d.decision === "learning" ? "Đang học %/L và lưu lượng – chưa lập lịch" : "Chưa cần tưới trong 6 giờ tới"}</p>`;
+    }
+    if (d.stages?.length) h += `<details><summary class="small">Stage MongoDB của bước này</summary><pre>${esc(JSON.stringify(d.stages, null, 2))}</pre></details>`;
+    return h;
+  }
+  function trainModal(job) {
+    let m = $("#train-modal");
+    if (!m) {
+      m = document.createElement("div");
+      m.id = "train-modal"; m.className = "modal"; m.setAttribute("role", "dialog"); m.setAttribute("aria-modal", "true");
+      m.setAttribute("aria-labelledby", "train-title");
+      document.body.appendChild(m);
+    }
+    m.hidden = false;
+    m.innerHTML = `<div class="modal-box">
+      <div class="modal-head"><h3 id="train-title">Học lại mô hình AI – ${esc(job.device_id)}</h3>
+        <span class="chip" id="train-engine"></span><button class="modal-x" data-close-modal aria-label="Đóng">✕</button></div>
+      <ol class="steps">${job.steps.map((s, i) => `<li class="step pending" data-step="${s.key}"></li>`).join("")}</ol>
+      <div class="modal-foot"><span id="train-summary" class="small muted">Đang chạy…</span><button data-close-modal>Đóng</button></div></div>`;
+    m._shown = {};
+    updateTrainModal(job);
+  }
+  function updateTrainModal(job) {
+    const m = $("#train-modal");
+    if (!m || m.hidden) return;
+    $("#train-engine").textContent = job.engine === "mongodb-aggregation" ? "chạy trên MongoDB Aggregation Pipeline" : job.engine ? "chế độ chạy thử (Python tương đương)" : "";
+    job.steps.forEach((s, i) => {
+      const sig = `${s.status}|${s.ms}`;
+      if (m._shown[s.key] === sig) return;
+      m._shown[s.key] = sig;
+      const li = m.querySelector(`[data-step="${s.key}"]`);
+      li.className = `step ${s.status}`;
+      const icon = s.status === "done" ? "✓" : s.status === "error" ? "✕" : s.status === "running" ? '<span class="spinner"></span>' : i + 1;
+      li.innerHTML = `<div class="step-head"><span class="step-icon">${icon}</span><b>${esc(s.title)}</b>${s.ms != null ? `<span class="muted small">${num(s.ms, 0)} ms</span>` : ""}</div>
+        <div class="step-desc small muted">${esc(s.desc)}</div><div class="step-data">${stepData(s)}</div>`;
+      if (s.status === "running") li.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    });
+    const sum = $("#train-summary");
+    if (job.status === "done") {
+      const r = job.result || {};
+      sum.innerHTML = r.status === "ok" ? `<b>Xong.</b> Mô hình mới: ${r.n_samples} mẫu, MAE ${num(r.mae_pct_per_hour, 3)} %/giờ, kỹ năng ${num(r.skill, 2)}` : `<b>Xong.</b> Chưa đủ dữ liệu để học (${r.n_samples} mẫu)`;
+      sum.className = "small";
+    } else if (job.status === "error") { sum.textContent = "Có lỗi – xem bước được đánh dấu ✕"; sum.className = "small step-err"; }
+  }
   document.addEventListener("click", async (ev) => {
+    if (ev.target.closest("[data-close-modal]") || ev.target.id === "train-modal") { const m = $("#train-modal"); if (m) m.hidden = true; return; }
     const b = ev.target.closest("[data-ai-train]");
     if (!b || !device()) return;
-    b.disabled = true; b.textContent = "Đang học…";
+    const dev = device()._id;
+    b.disabled = true;
     try {
-      const r = await post(`devices/${encodeURIComponent(device()._id)}/ai/train`);
-      toast(r.status === "ok" ? `Đã học lại: ${r.n_samples} mẫu, MAE ${num(r.mae_pct_per_hour, 2)} %/giờ` : `Chưa đủ dữ liệu (${r.n_samples} mẫu)`);
+      let job = await post(`devices/${encodeURIComponent(dev)}/ai/train`);
+      trainModal(job);
+      while (job.status === "running") {
+        await new Promise((r) => setTimeout(r, 400));
+        job = await api(`devices/${encodeURIComponent(dev)}/ai/train/${job.job_id}`);
+        updateTrainModal(job);
+      }
       renderAi(true).catch(console.warn);
-    } catch (e) { toast("Lỗi: " + e.message); b.disabled = false; b.textContent = "Học lại ngay"; }
+    } catch (e) { toast("Lỗi: " + e.message); }
+    b.disabled = false;
   });
+  document.addEventListener("keydown", (ev) => { if (ev.key === "Escape") { const m = $("#train-modal"); if (m) m.hidden = true; } });
 
   // ------------------------------------------------------------------ tab: Báo cáo nước (MongoDB Aggregation)
   const FORECAST_METHOD = {

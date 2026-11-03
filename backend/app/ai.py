@@ -115,8 +115,8 @@ def _utc(ts: datetime) -> datetime:
     return ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
 
 
-def py_features(tele: list[dict]) -> list[dict]:
-    from math import cos, pi, sin
+def py_buckets(tele: list[dict]) -> list[dict]:
+    """≙ $group theo khung 10 phút."""
     buckets: dict[datetime, list[dict]] = {}
     for d in tele:
         ts = _utc(d["ts"])
@@ -128,6 +128,11 @@ def py_features(tele: list[dict]) -> list[dict]:
         pts.append({"t": k, "soil": av("soil_moisture_pct"), "temp": av("air_temp_c"), "hum": av("air_humidity_pct"),
                     "water": int(any(x.get("pump_on") or (x.get("flow_lpm") or 0) > 0.05 for x in it)),
                     "mist": int(any(x.get("mist_on") for x in it))})
+    return pts
+
+
+def py_windows(pts: list[dict]) -> list[dict]:
+    """≙ $setWindowFields: trung bình trượt, độ dốc quá khứ / 60 phút tương lai, có tưới / phun gần đó."""
     times = [p["t"] for p in pts]
 
     def win(i, a, b):
@@ -140,21 +145,36 @@ def py_features(tele: list[dict]) -> list[dict]:
             return None
         return (w[-1]["soil"] - w[0]["soil"]) / ((w[-1]["t"] - w[0]["t"]).total_seconds() / 3600)
 
-    rows = []
+    out = []
     for i, p in enumerate(pts):
         nxt, past = win(i, 0, 60), win(i, -60, 0)
-        if max(q["water"] for q in past) or max(q["water"] for q in nxt) or max(q["mist"] for q in win(i, -30, 60)):
-            continue
-        s_next = slope(nxt)
-        if len(nxt) < 4 or s_next is None or p["temp"] is None or p["hum"] is None:
-            continue
+        out.append({**p, "soil_ma1h": sum(q["soil"] for q in past) / len(past), "slope_past": slope(win(i, -30, 0)),
+                    "slope_next": slope(nxt), "n_next": len(nxt), "wet_past": max(q["water"] for q in past),
+                    "wet_next": max(q["water"] for q in nxt), "mist_near": max(q["mist"] for q in win(i, -30, 60))})
+    return out
+
+
+def py_select(rows: list[dict]) -> list[dict]:
+    """≙ $match: chỉ khung không tưới / không phun, đủ dữ liệu tương lai."""
+    return [r for r in rows if not r["wet_past"] and not r["wet_next"] and not r["mist_near"] and r["n_next"] >= 4
+            and r["slope_next"] is not None and r["temp"] is not None and r["hum"] is not None]
+
+
+def py_finalize(rows: list[dict]) -> list[dict]:
+    """≙ $set VPD ($exp), giờ trong ngày ($sin/$cos), nhãn; $project."""
+    from math import cos, pi, sin
+    out = []
+    for p in rows:
         local = p["t"].astimezone(LOCAL_TZ)
         hod = local.hour + local.minute / 60
-        rows.append({"ts": p["t"], "temp": p["temp"], "hum": p["hum"], "vpd": vpd_kpa(p["temp"], p["hum"]),
-                     "soil": p["soil"], "hour_sin": sin(2 * pi / 24 * hod), "hour_cos": cos(2 * pi / 24 * hod),
-                     "target": -s_next, "soil_ma1h": sum(q["soil"] for q in past) / len(past),
-                     "slope_past": slope(win(i, -30, 0))})
-    return rows
+        out.append({"ts": p["t"], "temp": p["temp"], "hum": p["hum"], "vpd": vpd_kpa(p["temp"], p["hum"]),
+                    "soil": p["soil"], "hour_sin": sin(2 * pi / 24 * hod), "hour_cos": cos(2 * pi / 24 * hod),
+                    "target": -p["slope_next"], "soil_ma1h": p["soil_ma1h"], "slope_past": p["slope_past"]})
+    return out
+
+
+def py_features(tele: list[dict]) -> list[dict]:
+    return py_finalize(py_select(py_windows(py_buckets(tele))))
 
 
 def py_profile(tele: list[dict]) -> list[dict]:
@@ -204,6 +224,33 @@ async def normal_flow_lpm(device_id: str, cfg: dict) -> Optional[float]:
 
 
 # ----------------------------------------------------------------------------- huấn luyện
+async def _save_model(device_id: str, trigger: str, engine: str, res: dict, a: dict) -> dict:
+    now = utcnow()
+    doc = {"_id": f"MDL-{now:%y%m%d-%H%M%S}-{device_id}", "device_id": device_id, "trained_at": now,
+           "trigger": trigger, "engine": engine, "algorithm": "ridge_regression", "features": list(FEATURES),
+           "target": "drying_pct_per_hour_next_60min", "train_days": a["train_days"], **res}
+    await db.models.insert_one(doc)
+    summary = {k: doc.get(k) for k in ("_id", "trained_at", "trigger", "status", "n_samples", "n_train", "n_test",
+                                       "mae_pct_per_hour", "baseline_mae_pct_per_hour", "skill", "engine")}
+    if res.get("model"):
+        summary["weights"] = res["model"]["weights"]
+    await db.devices.update_one({"_id": device_id}, {"$set": {"ai.model": summary}})
+    rt = runtime.get(device_id)
+    rt.ai_model = RidgeModel.from_doc(res["model"]) if res.get("model") else None
+    rt.ai_model_at = now
+    rt.ai_plan_at = None                       # lập lại kế hoạch với mô hình mới
+    tags = device_tags(device_id, rt.site, rt.zone, rt.source)
+    metrics.increment("ml.retrains", tags={**tags, "trigger": trigger, "status": res["status"]})
+    metrics.gauge("ml.model.samples", res["n_samples"], tags)
+    metrics.gauge("ml.model.validation_mae", res.get("mae_pct_per_hour"), tags)
+    metrics.gauge("ml.model.skill", res.get("skill"), tags)
+    log.info("AI model retrained", extra={"device_id": device_id, "trigger": trigger, "model_status": res["status"],
+                                           "n_samples": res["n_samples"], "mae": res.get("mae_pct_per_hour"),
+                                           "baseline_mae": res.get("baseline_mae_pct_per_hour"),
+                                           "model_id": doc["_id"], "engine": engine})
+    return doc
+
+
 async def retrain(device_id: str, trigger: str) -> dict:
     lock = _retrain_lock.setdefault(device_id, asyncio.Lock())
     async with lock:
@@ -212,30 +259,179 @@ async def retrain(device_id: str, trigger: str) -> dict:
         with _span("agriguard.ml.train", device_id):
             rows, engine = await features(device_id, float(a["train_days"]))
             res = train(rows, float(a["ridge_lambda"]), int(a["min_samples"]))
-        now = utcnow()
-        doc = {"_id": f"MDL-{now:%y%m%d-%H%M%S}-{device_id}", "device_id": device_id, "trained_at": now,
-               "trigger": trigger, "engine": engine, "algorithm": "ridge_regression", "features": list(FEATURES),
-               "target": "drying_pct_per_hour_next_60min", "train_days": a["train_days"], **res}
-        await db.models.insert_one(doc)
-        summary = {k: doc.get(k) for k in ("_id", "trained_at", "trigger", "status", "n_samples", "n_train", "n_test",
-                                           "mae_pct_per_hour", "baseline_mae_pct_per_hour", "skill", "engine")}
-        if res.get("model"):
-            summary["weights"] = res["model"]["weights"]
-        await db.devices.update_one({"_id": device_id}, {"$set": {"ai.model": summary}})
-        rt = runtime.get(device_id)
-        rt.ai_model = RidgeModel.from_doc(res["model"]) if res.get("model") else None
-        rt.ai_model_at = now
-        rt.ai_plan_at = None                       # lập lại kế hoạch với mô hình mới
-        tags = device_tags(device_id, rt.site, rt.zone, rt.source)
-        metrics.increment("ml.retrains", tags={**tags, "trigger": trigger, "status": res["status"]})
-        metrics.gauge("ml.model.samples", res["n_samples"], tags)
-        metrics.gauge("ml.model.validation_mae", res.get("mae_pct_per_hour"), tags)
-        metrics.gauge("ml.model.skill", res.get("skill"), tags)
-        log.info("AI model retrained", extra={"device_id": device_id, "trigger": trigger, "model_status": res["status"],
-                                               "n_samples": res["n_samples"], "mae": res.get("mae_pct_per_hour"),
-                                               "baseline_mae": res.get("baseline_mae_pct_per_hour"),
-                                               "model_id": doc["_id"], "engine": engine})
-        return doc
+        return await _save_model(device_id, trigger, engine, res, a)
+
+
+# ----------------------------------------------------------------------------- "Học lại ngay" có hiển thị từng bước
+TRAIN_STEPS = [
+    ("raw", "Đọc dữ liệu cảm biến", "$match trên collection time series telemetry (thiết bị, 7 ngày, cảm biến đất hợp lệ)"),
+    ("buckets", "Gom khung 10 phút", "$group theo $dateTrunc (binSize 10 phút, giờ VN): TB độ ẩm đất, nhiệt độ, độ ẩm KK; có bơm / phun"),
+    ("windows", "Phân tích cửa sổ trượt", "$setWindowFields: trung bình trượt 1 giờ, $derivative 30 phút trước và 60 phút SAU (nhãn), có tưới trong 60 phút trước/sau"),
+    ("select", "Lọc khung dùng để học", "$match: bỏ khung có tưới / phun sương gần đó (độ ẩm đổi vì nước, không phải vì đất tự khô)"),
+    ("features", "Tạo đặc trưng ML", "$set: VPD = 0,6108·$exp(17,27T/(T+237,3))·(1−RH/100), giờ trong ngày $sin/$cos, nhãn = −độ dốc 60 phút tới"),
+    ("train", "Huấn luyện Ridge", "Học trên 70% dữ liệu cũ hơn, kiểm tra trên 30% mới hơn, so với mốc trung bình"),
+    ("save", "Lưu mô hình vào MongoDB", "insert vào collection models, cập nhật devices.ai.model"),
+    ("plan", "Dự báo lại 6 giờ + lịch tưới", "Mô hình mới dự báo độ ẩm đất và chọn thời điểm, lượng nước tối ưu"),
+]
+TRAIN_JOBS: dict[str, dict] = {}
+_SAMPLE_FIELDS = {
+    "raw": ("ts", "soil_moisture_pct", "air_temp_c", "air_humidity_pct", "pump_on", "flow_lpm"),
+    "buckets": ("t", "soil", "temp", "hum", "water", "mist"),
+    "windows": ("t", "soil", "soil_ma1h", "slope_past", "slope_next", "wet_past", "wet_next"),
+    "features": ("ts", "vpd", "soil", "hour_sin", "hour_cos", "target"),
+}
+
+
+def _sample(key: str, rows: list[dict], n: int = 3) -> list[dict]:
+    out = []
+    for r in rows[-n:]:
+        row = {}
+        for f in _SAMPLE_FIELDS[key]:
+            v = r.get(f, r.get("_id") if f == "t" else None)
+            row[f] = round(v, 3) if isinstance(v, float) else v
+        out.append(row)
+    return out
+
+
+def start_train_job(device_id: str) -> dict:
+    job_id = f"TRN-{utcnow():%H%M%S%f}"[:-3]
+    job = {"job_id": job_id, "device_id": device_id, "status": "running", "created_at": utcnow(), "engine": None,
+           "steps": [{"key": k, "title": t, "desc": d, "status": "pending", "ms": None, "data": None}
+                     for k, t, d in TRAIN_STEPS]}
+    TRAIN_JOBS[job_id] = job
+    for old in sorted(TRAIN_JOBS, key=lambda j: TRAIN_JOBS[j]["created_at"])[:-20]:
+        TRAIN_JOBS.pop(old, None)
+    asyncio.create_task(_run_train_job(job))
+    return job
+
+
+async def _run_train_job(job: dict) -> None:
+    import time
+    dev = job["device_id"]
+    steps = {s["key"]: s for s in job["steps"]}
+    current = None
+
+    async def step(key: str, coro):
+        nonlocal current
+        current = steps[key]
+        current["status"] = "running"
+        await asyncio.sleep(0.25)                      # để giao diện kịp hiển thị bước đang chạy
+        t0 = time.perf_counter()
+        result = await coro
+        current["ms"] = round((time.perf_counter() - t0) * 1000, 1)
+        current["status"] = "done"
+        return result
+
+    lock = _retrain_lock.setdefault(dev, asyncio.Lock())
+    try:
+        async with lock:
+            cfg = await db.get_settings()
+            a = cfg["ai"]
+            end = utcnow()
+            start = end - timedelta(days=float(a["train_days"]))
+            pipe = feature_pipeline(dev, start, end)
+            mem = _memory()
+            job["engine"] = "python-fallback" if mem else "mongodb-aggregation"
+
+            async def agg(stages: list[dict]) -> list[dict]:
+                return await (await db.telemetry.aggregate(stages)).to_list(100_000)
+
+            with _span("agriguard.ml.train", dev):
+                # 1. $match
+                async def s_raw():
+                    if mem:
+                        tele = [d for d in await _telemetry(dev, start, end)
+                                if d.get("soil_ok") and d.get("soil_moisture_pct") is not None]
+                        return tele, len(tele)
+                    n = (await agg(pipe[:1] + [{"$count": "n"}]) or [{"n": 0}])[0]["n"]
+                    last = await agg(pipe[:1] + [{"$sort": {"ts": -1}}, {"$limit": 3}, {"$project": {"_id": 0}}])
+                    return list(reversed(last)), n
+                tele, n_raw = await step("raw", s_raw())
+                steps["raw"]["data"] = {"count": n_raw, "label": "bản tin cảm biến", "stages": pipe[:1],
+                                        "sample": _sample("raw", tele)}
+
+                # 2. $group
+                async def s_buckets():
+                    if mem:
+                        b = py_buckets(tele)
+                        return b, len(b)
+                    n = (await agg(pipe[:2] + [{"$count": "n"}]) or [{"n": 0}])[0]["n"]
+                    return list(reversed(await agg(pipe[:2] + [{"$sort": {"_id": -1}}, {"$limit": 3}]))), n
+                buckets, n_b = await step("buckets", s_buckets())
+                steps["buckets"]["data"] = {"count": n_b, "label": "khung 10 phút", "stages": pipe[1:2],
+                                            "sample": _sample("buckets", buckets),
+                                            "note": f"{n_raw} bản tin → {n_b} khung"}
+
+                # 3. $setWindowFields
+                async def s_windows():
+                    if mem:
+                        w = py_windows(buckets)
+                        return w
+                    return list(reversed(await agg(pipe[:3] + [{"$sort": {"_id": -1}}, {"$limit": 4}])))[:3]
+                windows = await step("windows", s_windows())
+                # khung cuối chưa đủ 60 phút tương lai -> chọn mẫu có slope_next
+                shown = [w for w in windows if w.get("slope_next") is not None] or windows
+                steps["windows"]["data"] = {"count": n_b, "label": "khung có thêm trường cửa sổ", "stages": pipe[2:3],
+                                            "sample": _sample("windows", shown)}
+
+                # 4. $match lọc
+                async def s_select():
+                    if mem:
+                        sel = py_select(windows)
+                        return sel, len(sel)
+                    return None, (await agg(pipe[:4] + [{"$count": "n"}]) or [{"n": 0}])[0]["n"]
+                selected, n_sel = await step("select", s_select())
+                steps["select"]["data"] = {"count": n_sel, "label": "khung giữ lại", "stages": pipe[3:4],
+                                           "note": f"giữ {n_sel} / {n_b} khung, bỏ {n_b - n_sel} khung có tưới / phun sương "
+                                                   f"hoặc thiếu dữ liệu"}
+
+                # 5. $set đặc trưng + $project + $sort (toàn bộ pipeline)
+                async def s_features():
+                    return py_finalize(selected) if mem else await agg(pipe)
+                rows = await step("features", s_features())
+                steps["features"]["data"] = {"count": len(rows), "label": "mẫu huấn luyện", "stages": pipe[4:],
+                                             "sample": _sample("features", rows)}
+
+                # 6. Ridge
+                async def s_train():
+                    return train(rows, float(a["ridge_lambda"]), int(a["min_samples"]))
+                res = await step("train", s_train())
+                steps["train"]["data"] = {k: res.get(k) for k in ("status", "n_samples", "n_train", "n_test",
+                                                                  "mae_pct_per_hour", "baseline_mae_pct_per_hour", "skill")}
+                if res.get("model"):
+                    steps["train"]["data"]["weights"] = res["model"]["weights"]
+                else:
+                    steps["train"]["data"]["note"] = (f"Chưa đủ dữ liệu: {res['n_samples']}/{a['min_samples']} mẫu – "
+                                                      "tiếp tục dùng tốc độ khô đo trực tiếp")
+
+            # 7. lưu
+            doc = await step("save", _save_model(dev, "manual", job["engine"], res, a))
+            steps["save"]["data"] = {"model_id": doc["_id"], "collection": "models"}
+
+        # 8. lập lại kế hoạch ngay (ngoài lock học)
+        async def s_plan():
+            rt = runtime.get(dev)
+            if rt.latest is None:
+                return None
+            d = await db.devices.find_one({"_id": dev}, {"actuators": 1}) or {}
+            return await plan_device(rt, cfg, await incidents.active(), d.get("actuators", {}))
+        fc = await step("plan", s_plan())
+        if fc:
+            p = fc["plan"]
+            steps["plan"]["data"] = {"soil_now": fc["soil_now"], "soil_1h": fc["soil_1h"], "soil_6h": fc["soil_6h"],
+                                     "method": fc["method"], "decision": p.get("decision"), "start_at": p.get("start_at"),
+                                     "liters": p.get("liters"), "seconds": p.get("seconds")}
+        else:
+            steps["plan"]["data"] = {"note": "Thiết bị chưa gửi dữ liệu – bỏ qua"}
+        job["status"] = "done"
+        job["result"] = {k: v for k, v in doc.items() if k != "model"}
+    except Exception as exc:
+        log.exception("AI staged retrain failed", extra={"device_id": dev})
+        if current is not None:
+            current["status"] = "error"
+            current["data"] = {**(current.get("data") or {}), "error": str(exc)[:300]}
+        job["status"] = "error"
+        job["error"] = str(exc)[:300]
 
 
 async def load_models() -> None:

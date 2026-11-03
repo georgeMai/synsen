@@ -262,3 +262,36 @@ details.pipeline pre { font-size: 11.5px; max-height: 360px; overflow: auto; bac
 .ai-cols h3 { font-size: 14px; margin: 10px 0 6px; }
 #tab-ai .chip { margin-left: 6px; }
 #tab-ai p button { padding: 2px 8px; font-size: 12px; }
+
+/* cửa sổ "Học lại ngay" */
+.modal { position: fixed; inset: 0; z-index: 50; background: rgba(0, 0, 0, .45); display: flex; align-items: flex-start; justify-content: center; padding: 32px 16px; overflow-y: auto; }
+.modal[hidden] { display: none; }
+.modal-box { background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 12px; width: min(920px, 100%); box-shadow: 0 10px 40px rgba(0,0,0,.25); }
+.modal-head { display: flex; align-items: center; gap: 10px; padding: 14px 18px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--surface); border-radius: 12px 12px 0 0; }
+.modal-head h3 { margin: 0; font-size: 16px; flex: 1; }
+.modal-x { border: 0; background: transparent; font-size: 18px; padding: 2px 8px; }
+.modal-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 18px; border-top: 1px solid var(--border); }
+.steps { list-style: none; margin: 0; padding: 8px 18px; }
+.step { padding: 10px 0 10px 4px; border-bottom: 1px dashed var(--border); }
+.step:last-child { border-bottom: 0; }
+.step-head { display: flex; align-items: center; gap: 10px; }
+.step-head .muted { margin-left: auto; }
+.step-icon { width: 24px; height: 24px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 650; background: var(--surface-2); color: var(--text-2); flex: none; }
+.step.done .step-icon { background: color-mix(in srgb, var(--good) 18%, var(--surface)); color: var(--good); }
+.step.error .step-icon { background: color-mix(in srgb, var(--critical) 18%, var(--surface)); color: var(--critical); }
+.step.running .step-icon { background: color-mix(in srgb, var(--series-hum) 18%, var(--surface)); }
+.step.pending { opacity: .55; }
+.step-desc { margin: 2px 0 0 34px; }
+.step-data { margin: 6px 0 0 34px; font-size: 13px; }
+.step-data p { margin: 4px 0; }
+.step-count { font-size: 18px; }
+.step-err { color: var(--critical); }
+.step-table td, .step-table th { white-space: nowrap; font-size: 12px; }
+.step-data pre { font-size: 11px; max-height: 220px; overflow: auto; background: var(--surface-2); padding: 8px; border-radius: 6px; }
+.modal-head { flex-wrap: wrap; }
+.modal-head h3 { flex: 1 1 220px; min-width: 0; }
+@media (max-width: 560px) {
+  .modal { padding: 8px; }
+  .modal-head, .modal-foot, .steps { padding-left: 12px; padding-right: 12px; }
+  .step-desc, .step-data { margin-left: 0; }
+}

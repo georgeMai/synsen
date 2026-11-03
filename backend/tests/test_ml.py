@@ -150,3 +150,42 @@ def test_py_features_label_is_future_drying_and_skips_watering():
     rows = py_features(tele)
     assert rows and all(abs(r["target"] - 3.0) < 0.05 for r in rows)
     assert all(not (T0 + timedelta(minutes=90) <= r["ts"] <= T0 + timedelta(minutes=210)) for r in rows)
+
+
+def test_staged_retrain_job_runs_every_step():
+    import asyncio
+    from app import ai
+    from app.config import settings
+    from app.db import db, utcnow
+    old_uri = settings.mongodb_uri
+    object.__setattr__(settings, "mongodb_uri", "memory://")      # Settings là dataclass frozen
+
+    async def main():
+        await db.connect()
+        now, soil, docs = utcnow(), 70.0, []
+        for i in range(12 * 24 * 2):                      # 2 ngày, 5 phút/lần
+            t = now - timedelta(minutes=5 * (12 * 24 * 2 - i))
+            pump = i % 60 == 0
+            soil = soil + (10 if pump else 0) - 0.2
+            docs.append({"ts": t, "meta": {"device_id": "sim-09"}, "soil_moisture_pct": soil, "soil_ok": True,
+                         "air_temp_c": 30.0, "air_humidity_pct": 55.0, "pump_on": pump, "mist_on": False,
+                         "flow_lpm": 1.5 if pump else 0.0})
+        await db.telemetry.insert_many(docs)
+        await db.devices.insert_one({"_id": "sim-09"})
+        job = ai.start_train_job("sim-09")
+        for _ in range(200):
+            await asyncio.sleep(0.05)
+            if job["status"] != "running":
+                break
+        return job
+
+    try:
+        job = asyncio.run(main())
+    finally:
+        object.__setattr__(settings, "mongodb_uri", old_uri)
+    assert job["status"] == "done", job.get("error")
+    st = {s["key"]: s for s in job["steps"]}
+    assert all(s["status"] == "done" for s in job["steps"])
+    assert st["buckets"]["data"]["count"] < st["raw"]["data"]["count"]
+    assert st["features"]["data"]["count"] == st["select"]["data"]["count"] == st["train"]["data"]["n_samples"]
+    assert st["train"]["data"]["status"] == "ok"

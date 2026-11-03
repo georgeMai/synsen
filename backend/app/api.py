@@ -299,10 +299,21 @@ async def device_ai(device_id: str):
 
 @router.post("/devices/{device_id}/ai/train")
 async def device_ai_train(device_id: str, actor: str = Depends(require_admin)):
-    """Học lại mô hình ngay (ngoài lần học tự động sau mỗi lần tưới / định kỳ)."""
-    doc = await ai.retrain(device_id, "manual")
-    await audit("ai_train", actor, device_id=device_id, model_id=doc["_id"], status=doc["status"])
-    return {k: v for k, v in doc.items() if k != "model"}
+    """Học lại mô hình ngay, chạy nền theo từng bước (pipeline MongoDB → đặc trưng → Ridge → lưu → dự báo lại).
+    Theo dõi tiến độ bằng GET /devices/{id}/ai/train/{job_id}."""
+    if not await db.devices.find_one({"_id": device_id}, {"_id": 1}):
+        raise HTTPException(404, "Không tìm thấy thiết bị")
+    job = ai.start_train_job(device_id)
+    await audit("ai_train", actor, device_id=device_id, job_id=job["job_id"])
+    return job
+
+
+@router.get("/devices/{device_id}/ai/train/{job_id}")
+async def device_ai_train_status(device_id: str, job_id: str):
+    job = ai.TRAIN_JOBS.get(job_id)
+    if not job or job["device_id"] != device_id:
+        raise HTTPException(404, "Không tìm thấy phiên học lại (backend có thể vừa khởi động lại)")
+    return job
 
 
 @router.get("/devices/{device_id}/events")
