@@ -31,7 +31,7 @@ ESP32 (DHT11, cảm biến đất, YF-S201, relay bơm, relay phun sương)     
                         FastAPI backend (ingest · luật phát hiện · điều khiển tự động · kiểm chứng)
                          │                    │ DogStatsD metrics + JSON logs + APM traces
                          ▼                    ▼
-                   MongoDB Atlas         Datadog Agent ──► Datadog: dashboard · 26 monitors (metric + log) · 2 SLO
+                   MongoDB Atlas         Datadog Agent ──► Datadog: dashboard · 33 monitors (metric + log) · 2 SLO
                    (time series)                              │ webhook khi monitor bắn/hồi phục
                          ▲                                    ▼
                     Web dashboard  ◄──────────────  /api/webhooks/datadog → incident trong MongoDB

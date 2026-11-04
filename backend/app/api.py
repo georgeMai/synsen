@@ -10,12 +10,12 @@ from typing import Literal, Optional
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from . import ai
+from . import ai, notify
 from .analytics import water_report
 from .commands import commands
 from .config import settings
 from .db import DEFAULT_SETTINGS, db, deep_merge, utcnow
-from .incidents import ACTIVE, incidents
+from .incidents import ACTIVE, _parse_tags, incidents
 from .irrigation import BASELINE_STATUSES, robust_baseline
 from .metrics import metrics
 from .mqtt_bridge import bridge
@@ -127,7 +127,7 @@ class SettingsIn(BaseModel):
 
 class FaultIn(BaseModel):
     fault: Literal["dry_run", "leak", "dht_fail", "soil_disconnect", "soil_stuck", "offline", "mist_empty",
-                   "no_ack", "brownout", "slow_network", "hose_off", "clog", "dry_soil", "clear"]
+                   "no_ack", "brownout", "slow_network", "hose_off", "clog", "flow_sensor_broken", "dry_soil", "clear"]
     on: bool = True
 
 
@@ -453,6 +453,34 @@ async def datadog_webhook(payload: dict, token: str = Query("")):
     metrics.increment("webhook.datadog", tags={"transition": str(payload.get("transition", "")).lower()})
     log.info("Datadog webhook", extra={"transition": payload.get("transition"), "scope": payload.get("scope"),
                                        "monitor_id": payload.get("monitor_id"), "result": str(result)})
+    return result
+
+
+@router.post("/webhooks/datadog/notify")
+async def datadog_notify(payload: dict, token: str = Query("")):
+    """Webhook @webhook-agriguard-notify: chuyển cảnh báo Datadog sang Zalo / WhatsApp, kèm chẩn đoán nguyên nhân."""
+    if not settings.webhook_token or not secrets.compare_digest(token, settings.webhook_token):
+        raise HTTPException(401, "Sai token webhook")
+    tags = _parse_tags(payload.get("tags", "")) | _parse_tags(payload.get("scope", ""))
+    device_id = tags.get("device_id", "")
+    transition = (payload.get("transition") or "").lower()
+    icon = "✅" if "recover" in transition else "⚠️" if transition in ("warn", "no data") else "🚨"
+    lines = [f"{icon} AgriGuard: {payload.get('title') or 'Datadog monitor'}"]
+    if device_id:
+        lines.append(f"Thiết bị: {device_id}")
+        dev = await db.devices.find_one({"_id": device_id}, {"diagnosis": 1}) or {}
+        diag = dev.get("diagnosis") or {}
+        kind = tags.get("incident_type", "")
+        d = diag.get("pump") if kind.startswith("pump") or "pump" in kind else diag.get("connection")
+        if d and "recover" not in transition:
+            lines.append(f"Chẩn đoán: {d.get('text')}")
+    if payload.get("link"):
+        lines.append(f"Datadog: {payload['link']}")
+    if settings.public_base_url:
+        lines.append(f"Web: {settings.public_base_url.rstrip('/')}/")
+    result = await notify.send("\n".join(lines), key=f"{payload.get('monitor_id')}:{device_id}:{transition}")
+    metrics.increment("notify.sent", tags={"transition": transition or "unknown", "channels": ",".join(notify.channels()) or "none"})
+    log.info("Datadog notify", extra={"transition": transition, "device_id": device_id, "result": str(result)})
     return result
 
 

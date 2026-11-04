@@ -23,7 +23,7 @@ Mỗi sự cố có dòng thời gian để điều tra. Khi người vận hàn
 
 | Thành phần | Công nghệ | Vai trò |
 |---|---|---|
-| Thiết bị | ESP32 + DHT11 + cảm biến đất điện dung + YF‑S201 + 2 relay (bơm 5V, phun sương USB‑C 5V) + TFT ILI9341 | Đo, chấp hành lệnh, an toàn cục bộ, LWT |
+| Thiết bị | ESP32 + DHT11 + cảm biến đất điện dung + YF‑S401 (lưu lượng 0,3–6 L/phút) + 2 relay (bơm 5V, phun sương USB‑C 5V) + TFT ILI9341 | Đo, chấp hành lệnh, an toàn cục bộ, LWT |
 | Bộ giả lập | Python + paho‑mqtt | N thiết bị ảo, cùng hợp đồng MQTT, mô hình vật lý, tiêm lỗi |
 | Broker | Mosquitto 2 | MQTT QoS 0/1, retained status, LWT |
 | Backend | FastAPI, PyMongo Async, paho‑mqtt, DogStatsD, ddtrace | Ingest, luật, điều khiển, incident, kiểm chứng, REST API, phục vụ web |
@@ -285,7 +285,7 @@ Ngoài custom metrics còn có:
 - **HTTP check** `/api/health` và **TCP check** broker 1883.
 - **Datadog events:** mỗi incident mở hoặc đóng sinh một event trên timeline Datadog.
 
-### Monitors (26, tag `app:agriguard`, định nghĩa trong `datadog/definitions.py`)
+### Monitors (33, tag `app:agriguard`, định nghĩa trong `datadog/definitions.py`)
 
 | Monitor | Truy vấn (rút gọn) | Loại incident |
 |---|---|---|
@@ -313,6 +313,24 @@ Ngoài custom metrics còn có:
 
 Mọi monitor gắn `@webhook-agriguard`. Webhook gửi `transition`, `scope` (chứa `device_id`) và `tags` (chứa `incident_type`)
 về `/api/webhooks/datadog`. Backend mở hoặc gộp incident, lưu link monitor. Khi monitor hồi phục, backend chỉ ghi chú vào timeline, không tự đóng incident.
+
+### Chẩn đoán 2 sự cố hay gặp nhất: mất kết nối & bơm chạy khô (`backend/app/diagnose.py`, firmware 0.5.4)
+
+ESP32 tự báo nguyên nhân qua MQTT event, backend chẩn đoán, ghi vào dòng thời gian sự cố và gửi lên Datadog (tag `cause`):
+
+| Event thiết bị | Nội dung | Nguyên nhân (`cause`) |
+|---|---|---|
+| `reconnected` (ngay khi nối lại MQTT) | lần khởi động (`reset_reason`) hoặc: mất bao lâu, có mất Wi‑Fi không + mã lý do ESP‑IDF, RSSI trước khi rớt, relay vừa đóng/ngắt bao nhiêu ms trước, đã mở trang cấu hình chưa | `power_brownout`, `watchdog`, `panic`, `power_loss`, `relay_interference`, `wifi_weak`, `router_unreachable`, `wifi_auth`, `wifi_lost`, `network_path` |
+| `pump_run` (mỗi lần bơm tắt) | số giây, số xung YF‑S201, số cạnh (kể cả nhiễu), thời gian tới xung đầu tiên, độ ẩm đất trước/sau | `no_water` (hết nước / tắc ống hút / bơm hỏng), `flow_sensor_suspect` (đất vẫn ẩm lên → cảm biến lưu lượng hỏng), `flow_signal_noise`, `slow_priming` |
+
+Khi sự cố mở, backend ghi thêm nghi vấn ban đầu từ dữ liệu trước khi mất (bơm/phun vừa bật, RSSI thấp).
+Metric: `device.reconnects{cause}`, `device.disconnect_seconds{cause}`, `device.rssi_before_drop`, `pump.dry_run_diagnosis{cause}`,
+`pump.prime_ms`. Monitor mới: ESP32 kết nối chập chờn, mất kết nối quá 5 phút, Wi‑Fi yếu, broker ngắt vì quá hạn keepalive (log),
+bơm chạy khô lặp lại, cảm biến lưu lượng nghi hỏng, bơm mồi nước chậm. Dashboard: nhóm "Chẩn đoán mất kết nối & bơm chạy khô".
+
+**Nhận cảnh báo ngoài web:** monitor gắn tag `notify:yes` được `bootstrap.py` thêm email (`DD_NOTIFY_HANDLES`) và
+`@webhook-agriguard-notify` → `POST /api/webhooks/datadog/notify` → backend thêm chẩn đoán rồi gửi **Zalo** (Zalo Bot API)
+và/hoặc **WhatsApp** (CallMeBot) – `backend/app/notify.py`.
 
 ### Dự báo, phát hiện bất thường và AI – ai làm gì
 

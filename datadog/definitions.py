@@ -7,6 +7,8 @@ from __future__ import annotations
 
 APP_TAG = "app:agriguard"
 WEBHOOK_NAME = "agriguard"
+NOTIFY_WEBHOOK_NAME = "agriguard-notify"   # chuyển cảnh báo sang Zalo / WhatsApp qua backend (notify.py)
+NOTIFY_TAG = "notify:yes"                  # bootstrap.py thêm @webhook-agriguard-notify + DD_NOTIFY_HANDLES (email)
 
 # Biến $ALERT_* do Datadog thay thế khi gọi webhook
 WEBHOOK_PAYLOAD = {
@@ -32,7 +34,8 @@ def _msg(title: str, investigate: str, resolve: str, webhook: bool = True) -> st
 
 
 def _monitor(name, query, incident_type, priority, message, *, type_="query alert", critical=None,
-             warning=None, no_data_min=None, renotify=None, evaluation_delay=None, threshold_windows=None):
+             warning=None, no_data_min=None, renotify=None, evaluation_delay=None, threshold_windows=None,
+             notify=False):
     thresholds = {}
     if critical is not None:
         thresholds["critical"] = critical
@@ -58,7 +61,7 @@ def _monitor(name, query, incident_type, priority, message, *, type_="query aler
         "query": query,
         "message": message,
         "priority": priority,
-        "tags": [APP_TAG, f"incident_type:{incident_type}", "team:agriguard"],
+        "tags": [APP_TAG, f"incident_type:{incident_type}", "team:agriguard"] + ([NOTIFY_TAG] if notify else []),
         "options": options,
     }
 
@@ -71,8 +74,9 @@ MONITORS = [
         _msg("Thiết bị mất kết nối",
              "Xem `agriguard.device.rssi`, `device.wifi_reconnects` và log LWT của thiết bị; "
              "nếu mọi thiết bị cùng mất thì kiểm tra broker MQTT (`tcp.can_connect`).",
-             "Kiểm tra nguồn điện/Wi‑Fi của ESP32."),
-        critical=1, no_data_min=5,
+             "Kiểm tra nguồn điện/Wi‑Fi của ESP32. Khi ESP32 nối lại, log `Device reconnected` (trường `cause`) "
+             "và dòng thời gian sự cố ghi nguyên nhân: sụt áp, Wi‑Fi yếu, nhiễu relay, mất Internet…"),
+        critical=1, no_data_min=5, notify=True,
     ),
     _monitor(
         "Bơm chạy khô / tắc ống",
@@ -84,7 +88,7 @@ MONITORS = [
         _msg("Bơm chạy khô / tắc ống",
              "So sánh `agriguard.pump.state` với `agriguard.flow.rate`; xem lệnh bơm trong log (command_id).",
              "Châm nước vào bể / thông ống hút, sau đó bấm “Đã xử lý” – hệ thống sẽ chạy thử bơm 5 giây (pump.verify_seconds) và đo lưu lượng."),
-        critical=1,
+        critical=1, notify=True,
     ),
     _monitor(
         "Lưu lượng bơm giảm (tắc một phần / bơm yếu)",
@@ -289,6 +293,81 @@ MONITORS = [
              "Bật phun sương / che lưới; đảm bảo bơm ở chế độ AI hoặc Tự động để tưới trước giờ nóng.", webhook=False),
         critical=0.7, warning=0.5,
     ),
+    # ---- Chẩn đoán 2 sự cố hay gặp nhất: mất kết nối & bơm chạy khô (firmware 0.5.4 tự báo nguyên nhân) ----
+    _monitor(
+        "ESP32 kết nối chập chờn",
+        # event "reconnected" của thiết bị (không tính lần khởi động) -> device.reconnects{cause:...}
+        "sum(last_30m):sum:agriguard.device.reconnects{!cause:power_loss} by {device_id}.as_count() >= 3",
+        "device_flapping", 2,
+        _msg("ESP32 mất kết nối lặp lại nhiều lần trong 30 phút",
+             "Dashboard nhóm \"Chẩn đoán mất kết nối & bơm chạy khô\": toplist nguyên nhân (`cause`), RSSI trước khi "
+             "rớt, khởi động lại theo `reset_reason`. Log `service:agriguard-mqtt \"exceeded timeout\"` để xem phía broker.",
+             "power_brownout / relay_interference → nguồn riêng cho bơm, tụ, diode; wifi_weak → dời ESP32 / kích sóng; "
+             "network_path → kiểm tra Internet nơi đặt thiết bị.", webhook=False),
+        critical=3, warning=2, notify=True,
+    ),
+    _monitor(
+        "Thiết bị mất kết nối quá 5 phút",
+        "max(last_5m):max:agriguard.device.online{*} by {device_id} < 1",
+        "device_offline", 1,
+        _msg("Thiết bị mất kết nối liên tục hơn 5 phút",
+             "Không phải chập chờn ngắn: ESP32 có thể mất điện, treo hoặc đang phát trang cấu hình Wi‑Fi.",
+             "Kiểm tra nguồn và Wi‑Fi tại chỗ; khi nối lại xem nguyên nhân trong dòng thời gian sự cố.", webhook=False),
+        critical=1, no_data_min=10, notify=True,
+    ),
+    _monitor(
+        "Wi‑Fi ESP32 yếu – nguy cơ mất kết nối",
+        "avg(last_15m):avg:agriguard.device.rssi{source:real} by {device_id} < -78",
+        "wifi_weak", 3,
+        _msg("Sóng Wi‑Fi của ESP32 yếu", "Xem `agriguard.device.rssi` và `device.rssi_before_drop`.",
+             "Đưa ESP32 lại gần router, đổi hướng ăng-ten hoặc thêm bộ kích sóng.", webhook=False),
+        critical=-78, warning=-72,
+    ),
+    {
+        "name": "[AgriGuard] Broker MQTT ngắt thiết bị vì quá hạn keepalive (log)",
+        "type": "log alert",
+        "query": 'logs("service:agriguard-mqtt \"exceeded timeout\"").index("*").rollup("count").last("30m") > 3',
+        "message": (
+            "{{#is_alert}}⚠️ **Mosquitto đã ngắt {{value}} kết nối vì quá hạn keepalive trong 30 phút** – thiết bị gửi "
+            "dữ liệu không đều (Wi‑Fi chập chờn, ESP32 treo/khởi động lại).\n\n**Điều tra:** Logs → "
+            "`service:agriguard-mqtt \"exceeded timeout\"` (tên client cho biết thiết bị nào); so với "
+            "`agriguard.device.reconnects` theo `cause`.{{/is_alert}}\n"
+            "{{#is_recovery}}✅ Kết nối MQTT ổn định trở lại.{{/is_recovery}}"
+        ),
+        "priority": 3,
+        "tags": [APP_TAG, "incident_type:mqtt_keepalive", "team:agriguard", "signal:logs"],
+        "options": {"thresholds": {"critical": 3}, "enable_logs_sample": True, "notify_no_data": False,
+                    "include_tags": True, "require_full_window": False, "groupby_simple_monitor": False},
+    },
+    _monitor(
+        "Bơm chạy khô lặp lại",
+        "sum(last_2h):sum:agriguard.pump.dry_run_diagnosis{*} by {device_id}.as_count() >= 2",
+        "pump_dry_repeat", 2,
+        _msg("Bơm không ra nước nhiều lần trong 2 giờ",
+             "Toplist \"Nguyên nhân bơm chạy khô\" (`cause`): no_water / flow_sensor_suspect / flow_signal_noise / "
+             "slow_priming; log `Pump run diagnosis`.",
+             "no_water → châm nước, thông ống hút, kiểm tra nguồn bơm; flow_sensor_suspect → kiểm tra dây YF‑S201.",
+             webhook=False),
+        critical=2, notify=True,
+    ),
+    _monitor(
+        "Cảm biến lưu lượng nghi hỏng",
+        "sum(last_1h):sum:agriguard.pump.dry_run_diagnosis{cause:flow_sensor_suspect} by {device_id}.as_count() >= 1",
+        "flow_sensor_suspect", 2,
+        _msg("Đất vẫn ẩm lên nhưng YF‑S201 không đếm được nước",
+             "So `agriguard.soil.moisture` với `agriguard.flow.rate` trong lần bơm; log `Pump run diagnosis`.",
+             "Kiểm tra dây tín hiệu / nguồn 5V của cảm biến lưu lượng (nước vẫn tới cây, bơm không hỏng).",
+             webhook=False),
+        critical=1, notify=True,
+    ),
+    _monitor(
+        "Bơm mồi nước chậm (mực nước thấp / khí trong ống hút)",
+        "avg(last_1h):avg:agriguard.pump.prime_ms.avg{*} by {device_id} > 4000",
+        "pump_slow_priming", 3,
+        _msg("Bơm mất nhiều giây mới có nước", "Xem `agriguard.pump.prime_ms` – tăng dần là dấu hiệu sắp chạy khô.",
+             "Châm thêm nước, hạ đầu hút xuống sâu, xả khí trong ống.", webhook=False),
+        critical=4000, warning=3000,
+    ),
     # Log monitor: dùng Datadog Logs (không phải metric) để bắt hành vi của NGƯỜI vận hành
     {
         "name": "[AgriGuard] Liên tục báo đã sửa khi lỗi chưa được khắc phục (log)",
@@ -488,6 +567,29 @@ def dashboard(slo_ids: list[str] | None = None) -> dict:
                     f"max:agriguard.ai.risk.heat_stress{d} by {{device_id}}"),
                 _ts("Quyết định của bộ điều khiển AI",
                     "sum:agriguard.control.decision{actuator:pump} by {reason}.as_count()", display="bars"),
+            ]),
+            _group("Chẩn đoán mất kết nối & bơm chạy khô", [
+                _top("Nguyên nhân mất kết nối", f"top(sum:agriguard.device.reconnects{d} by {{cause}}.as_count(), 10, 'sum', 'desc')"),
+                _ts("Thiết bị online & khởi động lại theo nguyên nhân",
+                    f"min:agriguard.device.online{d} by {{device_id}}",
+                    f"sum:agriguard.device.reboots{d} by {{reset_reason}}.as_count()"),
+                _ts("Thời gian mất kết nối (giây) theo nguyên nhân",
+                    f"max:agriguard.device.disconnect_seconds.max{d} by {{cause}}", display="bars"),
+                _ts("RSSI hiện tại và RSSI ngay trước khi rớt (dBm)",
+                    f"avg:agriguard.device.rssi{d} by {{device_id}}", f"min:agriguard.device.rssi_before_drop{d} by {{device_id}}"),
+                _top("Nguyên nhân bơm chạy khô", f"top(sum:agriguard.pump.dry_run_diagnosis{d} by {{cause}}.as_count(), 10, 'sum', 'desc')"),
+                _ts("Thời gian mồi nước của bơm (ms)", f"avg:agriguard.pump.prime_ms.avg{d} by {{device_id}}"),
+                _ts("Bơm bật vs lưu lượng", f"max:agriguard.pump.state{d} by {{device_id}}", f"avg:agriguard.flow.rate{d} by {{device_id}}"),
+                {"definition": {"type": "log_stream", "title": "Mosquitto: ngắt kết nối thiết bị",
+                                "query": 'service:agriguard-mqtt ("exceeded timeout" OR "session taken over" OR "not authorised")',
+                                "columns": ["service"], "indexes": [], "message_display": "inline",
+                                "show_date_column": True, "show_message_column": True,
+                                "sort": {"column": "time", "order": "desc"}}},
+                {"definition": {"type": "log_stream", "title": "Chẩn đoán từ thiết bị (nối lại / lần bơm)",
+                                "query": 'service:agriguard-backend ("Device reconnected" OR "Pump run diagnosis")',
+                                "columns": ["service", "device_id", "cause"], "indexes": [], "message_display": "expanded-md",
+                                "show_date_column": True, "show_message_column": True,
+                                "sort": {"column": "time", "order": "desc"}}},
             ]),
             _group("Sức khoẻ thiết bị", [
                 _ts("Wi‑Fi RSSI (dBm)", f"avg:agriguard.device.rssi{d} by {{device_id}}"),

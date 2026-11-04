@@ -61,6 +61,8 @@ class DeviceRuntime:
     normal_flow_lpm: Optional[float] = None    # lưu lượng bơm bình thường học từ các lần tưới
     ml_errors: deque = field(default_factory=lambda: deque(maxlen=500))   # (lúc, |sai số dự báo 1 giờ|)
     ml_mae: Optional[float] = None
+    last_pump_diag: Optional[dict] = None      # chẩn đoán lần bơm gần nhất (diagnose.py)
+    last_conn_diag: Optional[dict] = None      # chẩn đoán lần mất kết nối gần nhất
 
     def add(self, r: Reading) -> None:
         prev = self.readings[-1] if self.readings else None

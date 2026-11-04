@@ -46,7 +46,7 @@ SOIL_DRY_RAW, SOIL_WET_RAW = 3500, 1400
 PUMP_MAX_S, MIST_MAX_S = 600, 900
 PUMP_GRACE_S, PUMP_DRYRUN_S, MIN_FLOW = 8, 60, 0.3
 COMM_LOSS_OFF_S = 120
-FAULTS = {"dry_run", "leak", "dht_fail", "soil_disconnect", "soil_stuck", "offline", "mist_empty", "hose_off", "clog",
+FAULTS = {"dry_run", "leak", "dht_fail", "soil_disconnect", "soil_stuck", "offline", "mist_empty", "hose_off", "clog", "flow_sensor_broken",
           "no_ack", "slow_network"}
 
 
@@ -82,6 +82,10 @@ class SimDevice:
         self.reset_reason = "power_on"
         self.seq = 0
         self.offline_since = 0.0
+        # chẩn đoán giống firmware 0.5.4: event "reconnected" (vì sao vừa mất kết nối) và "pump_run" (kết quả lần bơm)
+        self.pending_reconnect: dict | None = {"cause": "boot", "detail": "power_on", "reset_reason": "power_on",
+                                               "uptime_s": 0}
+        self.run = {"pulses": 0.0, "first_flow_ms": -1, "soil_start": None}
         self.client: mqtt.Client | None = None
         self.base = f"{ROOT}/{SITE}/{self.device_id}/"
 
@@ -94,7 +98,8 @@ class SimDevice:
         c.will_set(self.base + "status",
                    json.dumps({"device_id": self.device_id, "site": SITE, "online": False, "reason": "lwt",
                                "source": "sim"}), qos=1, retain=True)
-        c.on_connect = lambda cl, u, f, rc, p: (cl.subscribe(self.base + "cmd", qos=1), self.publish_status())
+        c.on_connect = lambda cl, u, f, rc, p: (cl.subscribe(self.base + "cmd", qos=1), self.publish_status(),
+                                                self.publish_reconnect())
         c.on_message = self.on_command
         c.reconnect_delay_set(1, 10)
         self.client = c
@@ -128,6 +133,13 @@ class SimDevice:
             "ip": "10.0.0.%d" % (10 + int(self.device_id[-2:])), "reset_reason": self.reset_reason,
             "wifi_reconnects": 0, "mqtt_reconnects": 1, "dht_errors_total": 0,
         }, retain=True)
+
+    def publish_reconnect(self) -> None:
+        info, self.pending_reconnect = self.pending_reconnect, None
+        if info:
+            self.pub("event", {"type": "reconnected", "fw_version": "sim-1.0", "rssi_now": random.randint(-70, -55),
+                               **info})
+            log.info("%s reconnected (%s)", self.device_id, info.get("cause"))
 
     def event(self, type_: str, actuator: str | None = None, detail: str | None = None) -> None:
         self.pub("event", {"type": type_, "actuator": actuator, "detail": detail, "flow_lpm": round(self.flow, 2)})
@@ -194,7 +206,18 @@ class SimDevice:
             act["auto_off"] = 0.0
         if act["on"] != on:
             self.state_changed = True     # gửi telemetry ngay, không chờ chu kỳ 5 giây
+        if name == "pump" and on and not act["on"]:
+            self.run = {"pulses": 0.0, "first_flow_ms": -1, "soil_start": round(self.soil, 1)}
+        stopped = name == "pump" and not on and act["on"]
         act["on"] = on
+        if stopped:
+            secs = time.time() - act["since"]
+            pulses = int(self.run["pulses"])
+            self.pub("event", {"type": "pump_run", "actuator": "pump", "detail": "off", "seconds": round(secs, 1),
+                               "pulses": pulses, "edges": pulses, "liters": round(pulses / 450, 3),
+                               "first_flow_ms": self.run["first_flow_ms"], "soil_start": self.run["soil_start"],
+                               "soil_end": round(self.soil + self.pending, 1), "flow_noise_count": 0,
+                               "rssi_dbm": random.randint(-70, -55)})
 
     # ------------------------------------------------------------- fault injection
     def apply_fault(self, fault: str, on: bool) -> None:
@@ -204,6 +227,7 @@ class SimDevice:
                 self.faults.clear()
                 self.stuck_raw = None
                 if was_offline:
+                    self.pending_reconnect = self._offline_info()
                     self.connect()
                 log.info("%s all faults cleared", self.device_id)
                 return
@@ -214,6 +238,8 @@ class SimDevice:
             if fault == "brownout":
                 self.boot = time.time()
                 self.reset_reason = "brownout"
+                self.pending_reconnect = {"cause": "boot", "detail": "brownout", "reset_reason": "brownout",
+                                          "uptime_s": 0}
                 for n in ("pump", "mist"):
                     self.set_actuator(n, False)
                     (self.pump if n == "pump" else self.mist).update(lockout=False, reason="")
@@ -232,8 +258,15 @@ class SimDevice:
             else:
                 self.faults.discard(fault)
                 if fault == "offline":
+                    self.pending_reconnect = self._offline_info()
                     self.connect()
             log.info("%s fault %s=%s", self.device_id, fault, on)
+
+    def _offline_info(self) -> dict:
+        """Lỗi 'offline' giả lập = mất Wi-Fi do sóng yếu (giống ESP32 đặt xa router)."""
+        return {"cause": "wifi_lost", "detail": "wifi_lost", "down_s": int(time.time() - self.offline_since),
+                "wifi_reason": 200, "rssi_before": random.randint(-88, -81), "mqtt_state": -3,
+                "pump_on_at_drop": False, "mist_on_at_drop": False}
 
     # ------------------------------------------------------------- physics
     def ambient(self, t: float) -> tuple[float, float]:
@@ -265,12 +298,21 @@ class SimDevice:
                 self.flow = max(0.0, random.gauss(0.6, 0.05))
             else:
                 self.flow = 0.0
+            # flow_sensor_broken: nước vẫn chảy tới gốc nhưng YF-S201 không phát xung (tuột dây / hỏng cảm biến)
+            real_flow = max(0.0, random.gauss(1.6, 0.05)) if (self.pump["on"] and water_ok
+                                                               and "flow_sensor_broken" in self.faults) else self.flow
+            if "flow_sensor_broken" in self.faults:
+                self.flow = 0.0
+            if self.pump["on"]:
+                self.run["pulses"] += self.flow * 7.5 * dt
+                if self.flow > 0 and self.run["first_flow_ms"] < 0:
+                    self.run["first_flow_ms"] = int((time.time() - self.pump["since"]) * 1000)
             self.liters += self.flow * dt / 60
             # bốc hơi nhanh hơn khi nóng và khi không khí khô (để mô hình AI có quan hệ thật để học)
             dry_air = max(0.5, 1 + 0.015 * (60 - self.hum))
             evaporation = (0.012 + 0.004 * max(0.0, self.temp - 25)) * dry_air * EVAP * dt
             if self.pump["on"] and "hose_off" not in self.faults:   # hose_off: nước chảy ra ngoài, không tới gốc
-                self.pending += self.flow * self.soil_k * dt
+                self.pending += real_flow * self.soil_k * dt
             infiltrate = self.pending * (1 - math.exp(-dt / INFIL_TAU_S))
             self.pending -= infiltrate
             self.soil = min(98.0, max(5.0, self.soil - evaporation + infiltrate))

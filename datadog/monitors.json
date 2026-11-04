@@ -3,12 +3,13 @@
     "name": "[AgriGuard] Thiết bị mất kết nối",
     "type": "query alert",
     "query": "max(last_1m):max:agriguard.device.online{*} by {device_id} < 1",
-    "message": "{{#is_alert}}🚨 **Thiết bị mất kết nối** trên `{{device_id.name}}`\n\n**Điều tra:** Xem `agriguard.device.rssi`, `device.wifi_reconnects` và log LWT của thiết bị; nếu mọi thiết bị cùng mất thì kiểm tra broker MQTT (`tcp.can_connect`).\n\n**Khắc phục:** Kiểm tra nguồn điện/Wi‑Fi của ESP32.{{/is_alert}}\n{{#is_recovery}}✅ Thiết bị mất kết nối – tín hiệu đã trở lại bình thường. Xác nhận khắc phục trên web AgriGuard để hệ thống kiểm chứng và đóng sự cố.{{/is_recovery}}\n\nDashboard: AgriGuard – IoT Irrigation Operations @webhook-agriguard",
+    "message": "{{#is_alert}}🚨 **Thiết bị mất kết nối** trên `{{device_id.name}}`\n\n**Điều tra:** Xem `agriguard.device.rssi`, `device.wifi_reconnects` và log LWT của thiết bị; nếu mọi thiết bị cùng mất thì kiểm tra broker MQTT (`tcp.can_connect`).\n\n**Khắc phục:** Kiểm tra nguồn điện/Wi‑Fi của ESP32. Khi ESP32 nối lại, log `Device reconnected` (trường `cause`) và dòng thời gian sự cố ghi nguyên nhân: sụt áp, Wi‑Fi yếu, nhiễu relay, mất Internet…{{/is_alert}}\n{{#is_recovery}}✅ Thiết bị mất kết nối – tín hiệu đã trở lại bình thường. Xác nhận khắc phục trên web AgriGuard để hệ thống kiểm chứng và đóng sự cố.{{/is_recovery}}\n\nDashboard: AgriGuard – IoT Irrigation Operations @webhook-agriguard",
     "priority": 1,
     "tags": [
       "app:agriguard",
       "incident_type:device_offline",
-      "team:agriguard"
+      "team:agriguard",
+      "notify:yes"
     ],
     "options": {
       "notify_audit": false,
@@ -31,7 +32,8 @@
     "tags": [
       "app:agriguard",
       "incident_type:pump_dry_run",
-      "team:agriguard"
+      "team:agriguard",
+      "notify:yes"
     ],
     "options": {
       "notify_audit": false,
@@ -523,6 +525,169 @@
       "thresholds": {
         "critical": 0.7,
         "warning": 0.5
+      }
+    }
+  },
+  {
+    "name": "[AgriGuard] ESP32 kết nối chập chờn",
+    "type": "query alert",
+    "query": "sum(last_30m):sum:agriguard.device.reconnects{!cause:power_loss} by {device_id}.as_count() >= 3",
+    "message": "{{#is_alert}}🚨 **ESP32 mất kết nối lặp lại nhiều lần trong 30 phút** trên `{{device_id.name}}`\n\n**Điều tra:** Dashboard nhóm \"Chẩn đoán mất kết nối & bơm chạy khô\": toplist nguyên nhân (`cause`), RSSI trước khi rớt, khởi động lại theo `reset_reason`. Log `service:agriguard-mqtt \"exceeded timeout\"` để xem phía broker.\n\n**Khắc phục:** power_brownout / relay_interference → nguồn riêng cho bơm, tụ, diode; wifi_weak → dời ESP32 / kích sóng; network_path → kiểm tra Internet nơi đặt thiết bị.{{/is_alert}}\n{{#is_recovery}}✅ ESP32 mất kết nối lặp lại nhiều lần trong 30 phút – tín hiệu đã trở lại bình thường. Xác nhận khắc phục trên web AgriGuard để hệ thống kiểm chứng và đóng sự cố.{{/is_recovery}}\n\nDashboard: AgriGuard – IoT Irrigation Operations ",
+    "priority": 2,
+    "tags": [
+      "app:agriguard",
+      "incident_type:device_flapping",
+      "team:agriguard",
+      "notify:yes"
+    ],
+    "options": {
+      "notify_audit": false,
+      "include_tags": true,
+      "require_full_window": false,
+      "notify_no_data": false,
+      "renotify_interval": 0,
+      "thresholds": {
+        "critical": 3,
+        "warning": 2
+      }
+    }
+  },
+  {
+    "name": "[AgriGuard] Thiết bị mất kết nối quá 5 phút",
+    "type": "query alert",
+    "query": "max(last_5m):max:agriguard.device.online{*} by {device_id} < 1",
+    "message": "{{#is_alert}}🚨 **Thiết bị mất kết nối liên tục hơn 5 phút** trên `{{device_id.name}}`\n\n**Điều tra:** Không phải chập chờn ngắn: ESP32 có thể mất điện, treo hoặc đang phát trang cấu hình Wi‑Fi.\n\n**Khắc phục:** Kiểm tra nguồn và Wi‑Fi tại chỗ; khi nối lại xem nguyên nhân trong dòng thời gian sự cố.{{/is_alert}}\n{{#is_recovery}}✅ Thiết bị mất kết nối liên tục hơn 5 phút – tín hiệu đã trở lại bình thường. Xác nhận khắc phục trên web AgriGuard để hệ thống kiểm chứng và đóng sự cố.{{/is_recovery}}\n\nDashboard: AgriGuard – IoT Irrigation Operations ",
+    "priority": 1,
+    "tags": [
+      "app:agriguard",
+      "incident_type:device_offline",
+      "team:agriguard",
+      "notify:yes"
+    ],
+    "options": {
+      "notify_audit": false,
+      "include_tags": true,
+      "require_full_window": false,
+      "notify_no_data": true,
+      "renotify_interval": 0,
+      "thresholds": {
+        "critical": 1
+      },
+      "no_data_timeframe": 10
+    }
+  },
+  {
+    "name": "[AgriGuard] Wi‑Fi ESP32 yếu – nguy cơ mất kết nối",
+    "type": "query alert",
+    "query": "avg(last_15m):avg:agriguard.device.rssi{source:real} by {device_id} < -78",
+    "message": "{{#is_alert}}🚨 **Sóng Wi‑Fi của ESP32 yếu** trên `{{device_id.name}}`\n\n**Điều tra:** Xem `agriguard.device.rssi` và `device.rssi_before_drop`.\n\n**Khắc phục:** Đưa ESP32 lại gần router, đổi hướng ăng-ten hoặc thêm bộ kích sóng.{{/is_alert}}\n{{#is_recovery}}✅ Sóng Wi‑Fi của ESP32 yếu – tín hiệu đã trở lại bình thường. Xác nhận khắc phục trên web AgriGuard để hệ thống kiểm chứng và đóng sự cố.{{/is_recovery}}\n\nDashboard: AgriGuard – IoT Irrigation Operations ",
+    "priority": 3,
+    "tags": [
+      "app:agriguard",
+      "incident_type:wifi_weak",
+      "team:agriguard"
+    ],
+    "options": {
+      "notify_audit": false,
+      "include_tags": true,
+      "require_full_window": false,
+      "notify_no_data": false,
+      "renotify_interval": 0,
+      "thresholds": {
+        "critical": -78,
+        "warning": -72
+      }
+    }
+  },
+  {
+    "name": "[AgriGuard] Broker MQTT ngắt thiết bị vì quá hạn keepalive (log)",
+    "type": "log alert",
+    "query": "logs(\"service:agriguard-mqtt \"exceeded timeout\"\").index(\"*\").rollup(\"count\").last(\"30m\") > 3",
+    "message": "{{#is_alert}}⚠️ **Mosquitto đã ngắt {{value}} kết nối vì quá hạn keepalive trong 30 phút** – thiết bị gửi dữ liệu không đều (Wi‑Fi chập chờn, ESP32 treo/khởi động lại).\n\n**Điều tra:** Logs → `service:agriguard-mqtt \"exceeded timeout\"` (tên client cho biết thiết bị nào); so với `agriguard.device.reconnects` theo `cause`.{{/is_alert}}\n{{#is_recovery}}✅ Kết nối MQTT ổn định trở lại.{{/is_recovery}}",
+    "priority": 3,
+    "tags": [
+      "app:agriguard",
+      "incident_type:mqtt_keepalive",
+      "team:agriguard",
+      "signal:logs"
+    ],
+    "options": {
+      "thresholds": {
+        "critical": 3
+      },
+      "enable_logs_sample": true,
+      "notify_no_data": false,
+      "include_tags": true,
+      "require_full_window": false,
+      "groupby_simple_monitor": false
+    }
+  },
+  {
+    "name": "[AgriGuard] Bơm chạy khô lặp lại",
+    "type": "query alert",
+    "query": "sum(last_2h):sum:agriguard.pump.dry_run_diagnosis{*} by {device_id}.as_count() >= 2",
+    "message": "{{#is_alert}}🚨 **Bơm không ra nước nhiều lần trong 2 giờ** trên `{{device_id.name}}`\n\n**Điều tra:** Toplist \"Nguyên nhân bơm chạy khô\" (`cause`): no_water / flow_sensor_suspect / flow_signal_noise / slow_priming; log `Pump run diagnosis`.\n\n**Khắc phục:** no_water → châm nước, thông ống hút, kiểm tra nguồn bơm; flow_sensor_suspect → kiểm tra dây YF‑S201.{{/is_alert}}\n{{#is_recovery}}✅ Bơm không ra nước nhiều lần trong 2 giờ – tín hiệu đã trở lại bình thường. Xác nhận khắc phục trên web AgriGuard để hệ thống kiểm chứng và đóng sự cố.{{/is_recovery}}\n\nDashboard: AgriGuard – IoT Irrigation Operations ",
+    "priority": 2,
+    "tags": [
+      "app:agriguard",
+      "incident_type:pump_dry_repeat",
+      "team:agriguard",
+      "notify:yes"
+    ],
+    "options": {
+      "notify_audit": false,
+      "include_tags": true,
+      "require_full_window": false,
+      "notify_no_data": false,
+      "renotify_interval": 0,
+      "thresholds": {
+        "critical": 2
+      }
+    }
+  },
+  {
+    "name": "[AgriGuard] Cảm biến lưu lượng nghi hỏng",
+    "type": "query alert",
+    "query": "sum(last_1h):sum:agriguard.pump.dry_run_diagnosis{cause:flow_sensor_suspect} by {device_id}.as_count() >= 1",
+    "message": "{{#is_alert}}🚨 **Đất vẫn ẩm lên nhưng YF‑S201 không đếm được nước** trên `{{device_id.name}}`\n\n**Điều tra:** So `agriguard.soil.moisture` với `agriguard.flow.rate` trong lần bơm; log `Pump run diagnosis`.\n\n**Khắc phục:** Kiểm tra dây tín hiệu / nguồn 5V của cảm biến lưu lượng (nước vẫn tới cây, bơm không hỏng).{{/is_alert}}\n{{#is_recovery}}✅ Đất vẫn ẩm lên nhưng YF‑S201 không đếm được nước – tín hiệu đã trở lại bình thường. Xác nhận khắc phục trên web AgriGuard để hệ thống kiểm chứng và đóng sự cố.{{/is_recovery}}\n\nDashboard: AgriGuard – IoT Irrigation Operations ",
+    "priority": 2,
+    "tags": [
+      "app:agriguard",
+      "incident_type:flow_sensor_suspect",
+      "team:agriguard",
+      "notify:yes"
+    ],
+    "options": {
+      "notify_audit": false,
+      "include_tags": true,
+      "require_full_window": false,
+      "notify_no_data": false,
+      "renotify_interval": 0,
+      "thresholds": {
+        "critical": 1
+      }
+    }
+  },
+  {
+    "name": "[AgriGuard] Bơm mồi nước chậm (mực nước thấp / khí trong ống hút)",
+    "type": "query alert",
+    "query": "avg(last_1h):avg:agriguard.pump.prime_ms.avg{*} by {device_id} > 4000",
+    "message": "{{#is_alert}}🚨 **Bơm mất nhiều giây mới có nước** trên `{{device_id.name}}`\n\n**Điều tra:** Xem `agriguard.pump.prime_ms` – tăng dần là dấu hiệu sắp chạy khô.\n\n**Khắc phục:** Châm thêm nước, hạ đầu hút xuống sâu, xả khí trong ống.{{/is_alert}}\n{{#is_recovery}}✅ Bơm mất nhiều giây mới có nước – tín hiệu đã trở lại bình thường. Xác nhận khắc phục trên web AgriGuard để hệ thống kiểm chứng và đóng sự cố.{{/is_recovery}}\n\nDashboard: AgriGuard – IoT Irrigation Operations ",
+    "priority": 3,
+    "tags": [
+      "app:agriguard",
+      "incident_type:pump_slow_priming",
+      "team:agriguard"
+    ],
+    "options": {
+      "notify_audit": false,
+      "include_tags": true,
+      "require_full_window": false,
+      "notify_no_data": false,
+      "renotify_interval": 0,
+      "thresholds": {
+        "critical": 4000,
+        "warning": 3000
       }
     }
   },

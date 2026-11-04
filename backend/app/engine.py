@@ -8,6 +8,7 @@ from .commands import commands
 from .config import settings
 from .control import decide_mist, decide_pump, decide_pump_ai, idle_reason
 from .db import as_utc, db, utcnow
+from .diagnose import offline_hypothesis
 from .incidents import incidents
 from .irrigation import ASSESSED
 from .prediction import dry_at, predict
@@ -62,8 +63,10 @@ async def health_tick() -> None:
             await db.devices.update_one({"_id": rt.device_id}, {"$set": {"health": health, "prediction": pred}})
 
         for f in findings:
-            await incidents.open_or_update(rt.device_id, f.type, f.message, detected_by="rules",
-                                           started_at=f.started_at, context=f.context, site=rt.site)
+            inc, created = await incidents.open_or_update(rt.device_id, f.type, f.message, detected_by="rules",
+                                                          started_at=f.started_at, context=f.context, site=rt.site)
+            if created:
+                await _initial_diagnosis(rt, inc, now)
         for (device_id, type_), inc in active_by_key.items():
             if (device_id == rt.device_id and type_ in RULE_TYPES and type_ not in found
                     and inc["status"] != "verifying"):
@@ -95,6 +98,18 @@ async def health_tick() -> None:
         counts[key] = counts.get(key, 0) + 1
     for (type_, severity), n in counts.items():
         metrics.gauge("incident.open", n, {"type": type_, "severity": severity})
+
+
+async def _initial_diagnosis(rt, inc: dict, now) -> None:
+    """Ghi chẩn đoán ban đầu vào sự cố vừa mở (mất kết nối, bơm chạy khô)."""
+    if inc["type"] == "device_offline":
+        note = offline_hypothesis(list(rt.readings), now)
+        await incidents.add_note(inc["_id"], "system", "diagnosis", note)
+    elif inc["type"] in ("pump_dry_run", "pump_low_flow"):
+        d = rt.last_pump_diag
+        if d and (now - d["at"]).total_seconds() <= 300:
+            await incidents.add_note(inc["_id"], "device", "diagnosis", f"Chẩn đoán lần bơm: {d['text']}")
+            await db.incidents.update_one({"_id": inc["_id"]}, {"$set": {"context.diagnosis": d}})
 
 
 def _blocking(active: list[dict], device_id: str, actuator: str) -> tuple[bool, bool]:

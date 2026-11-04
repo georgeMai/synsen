@@ -51,6 +51,12 @@ class Settings:
     admin_token: str = field(default_factory=lambda: _env("ADMIN_TOKEN", ""))
     # Token bắt buộc trong URL webhook mà Datadog gọi về.
     webhook_token: str = field(default_factory=lambda: _env("DATADOG_WEBHOOK_TOKEN", ""))
+    public_base_url: str = field(default_factory=lambda: _env("PUBLIC_BASE_URL", ""))
+    # Chuyển cảnh báo Datadog sang Zalo / WhatsApp (notify.py). Để trống = không gửi.
+    zalo_bot_token: str = field(default_factory=lambda: _env("ZALO_BOT_TOKEN", ""))
+    zalo_chat_id: str = field(default_factory=lambda: _env("ZALO_CHAT_ID", ""))
+    callmebot_phone: str = field(default_factory=lambda: _env("CALLMEBOT_PHONE", ""))
+    callmebot_apikey: str = field(default_factory=lambda: _env("CALLMEBOT_APIKEY", ""))
 
     enable_sim_api: bool = field(default_factory=lambda: _bool("ENABLE_SIM_API", True))
     control_interval_s: int = field(default_factory=lambda: _int("CONTROL_INTERVAL_S", 5))

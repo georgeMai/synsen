@@ -7,7 +7,8 @@
 
 Biến môi trường (đọc thêm từ file .env ở thư mục gốc nếu có):
   DD_API_KEY, DD_APP_KEY, DD_SITE (vd. us5.datadoghq.com),
-  PUBLIC_BASE_URL (vd. https://synsen.net/agriguard), DATADOG_WEBHOOK_TOKEN
+  PUBLIC_BASE_URL (vd. https://synsen.net/agriguard), DATADOG_WEBHOOK_TOKEN,
+  DD_NOTIFY_HANDLES (tuỳ chọn, vd. "@ban@gmail.com" – email nhận cảnh báo của các monitor gắn tag notify:yes)
 Chỉ dùng thư viện chuẩn Python – không cần cài thêm gì.
 """
 from __future__ import annotations
@@ -106,21 +107,28 @@ def apply(dd: Datadog) -> None:
     base_url = os.environ.get("PUBLIC_BASE_URL", "").rstrip("/")
     token = os.environ.get("DATADOG_WEBHOOK_TOKEN", "")
     if base_url and token:
-        hook = {"name": defs.WEBHOOK_NAME, "url": f"{base_url}/api/webhooks/datadog?token={token}",
-                "payload": json.dumps(defs.WEBHOOK_PAYLOAD), "encode_as": "json"}
         path = "/api/v1/integration/webhooks/configuration/webhooks"
-        try:
-            dd.call("POST", path, hook)
-            print(f"✓ webhook @{defs.WEBHOOK_NAME} created")
-        except RuntimeError:
-            dd.call("PUT", f"{path}/{defs.WEBHOOK_NAME}", {k: v for k, v in hook.items() if k != "name"})
-            print(f"✓ webhook @{defs.WEBHOOK_NAME} updated")
+        for name, route in ((defs.WEBHOOK_NAME, "/api/webhooks/datadog"),
+                            (defs.NOTIFY_WEBHOOK_NAME, "/api/webhooks/datadog/notify")):
+            hook = {"name": name, "url": f"{base_url}{route}?token={token}",
+                    "payload": json.dumps(defs.WEBHOOK_PAYLOAD), "encode_as": "json"}
+            try:
+                dd.call("POST", path, hook)
+                print(f"✓ webhook @{name} created")
+            except RuntimeError:
+                dd.call("PUT", f"{path}/{name}", {k: v for k, v in hook.items() if k != "name"})
+                print(f"✓ webhook @{name} updated")
     else:
         print("! Bỏ qua webhook: cần PUBLIC_BASE_URL và DATADOG_WEBHOOK_TOKEN (Datadog phải gọi được backend từ Internet)")
 
     existing = {m["name"]: m["id"] for m in dd.call("GET", "/api/v1/monitor", query={"monitor_tags": defs.APP_TAG})}
     failed = []
+    # Monitor gắn tag notify:yes: thêm kênh nhận cảnh báo (webhook Zalo/WhatsApp qua backend + email trong DD_NOTIFY_HANDLES)
+    handles = os.environ.get("DD_NOTIFY_HANDLES", "").strip()
+    extra = " ".join(x for x in ([f"@webhook-{defs.NOTIFY_WEBHOOK_NAME}"] if base_url and token else []) + [handles] if x)
     for mon in defs.MONITORS:
+        if extra and defs.NOTIFY_TAG in mon.get("tags", []):
+            mon = {**mon, "message": f"{mon['message']}\n\n{extra}"}
         try:
             if mon["name"] in existing:
                 dd.call("PUT", f"/api/v1/monitor/{existing[mon['name']]}", mon)

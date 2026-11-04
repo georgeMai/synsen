@@ -12,6 +12,7 @@ from .commands import commands
 from .config import settings
 from .db import db, utcnow
 from .incidents import incidents
+from .diagnose import CAUSE_TEXT, diagnose_pump_run, diagnose_reconnect
 from .irrigation import BASELINE_STATUSES, ASSESSED, IrrigationTracker, assess, describe
 from .metrics import device_tags, metrics
 from .state import Reading, runtime
@@ -257,8 +258,18 @@ async def _event(site: str, device_id: str, data: dict, received: datetime) -> N
     ts, _ = _device_ts(data, received)
     doc = {"ts": ts, "device_id": device_id, "site": site, "type": type_,
            "actuator": data.get("actuator"), "detail": data.get("detail"), "flow_lpm": data.get("flow_lpm")}
+    for k in ("cause", "down_s", "wifi_reason", "rssi_before", "reset_reason", "pulses", "edges", "seconds",
+              "first_flow_ms", "soil_start", "soil_end", "relay_switch_ago_ms"):
+        if data.get(k) is not None:
+            doc[k] = data.get(k)
     await db.events.insert_one(doc)
     metrics.increment("device.events", tags={"device_id": device_id, "event_type": type_})
+    if type_ == "reconnected":
+        await _on_reconnected(site, device_id, data, ts)
+        return
+    if type_ == "pump_run":
+        await _on_pump_run(site, device_id, data, ts)
+        return
     log.info("Device event %s", type_, extra={"device_id": device_id, "event_type": type_,
                                                "detail": data.get("detail")})
     incident_type = (EVENT_INCIDENTS.get((type_, data.get("detail")))
@@ -270,6 +281,65 @@ async def _event(site: str, device_id: str, data: dict, received: datetime) -> N
             detected_by="device", site=site,
             started_at=ts - timedelta(seconds=EVENT_DETECTION_DELAY_S.get(incident_type, 0)), context={"event": type_, "flow_lpm": data.get("flow_lpm")},
         )
+
+
+async def _attach_note(device_id: str, types: tuple[str, ...], note: str, context: dict, within_min: int = 30) -> None:
+    """Ghi chẩn đoán vào sự cố đang mở (hoặc vừa đóng trong `within_min` phút) cùng loại của thiết bị."""
+    inc = await db.incidents.find_one({"device_id": device_id, "type": {"$in": list(types)},
+                                       "status": {"$ne": "resolved"}}, sort=[("opened_at", -1)])
+    if not inc:
+        inc = await db.incidents.find_one(
+            {"device_id": device_id, "type": {"$in": list(types)}, "status": "resolved",
+             "resolved_at": {"$gte": utcnow() - timedelta(minutes=within_min)}}, sort=[("resolved_at", -1)])
+    if inc:
+        await incidents.add_note(inc["_id"], "device", "diagnosis", note)
+        await db.incidents.update_one({"_id": inc["_id"]}, {"$set": {"context.diagnosis": context}})
+
+
+async def _on_reconnected(site: str, device_id: str, data: dict, ts: datetime) -> None:
+    rt = runtime.get(device_id)
+    tags = device_tags(device_id, site, data.get("zone"), data.get("source"))
+    code, text = diagnose_reconnect(data)
+    down = data.get("down_s")
+    diag = {"cause": code, "text": text, "down_s": down, "rssi_before": data.get("rssi_before"),
+            "wifi_reason": data.get("wifi_reason"), "reported_cause": data.get("cause"), "at": ts}
+    rt.last_conn_diag = diag
+    metrics.increment("device.reconnects", tags={**tags, "cause": code})
+    if isinstance(down, (int, float)):
+        metrics.histogram("device.disconnect_seconds", down, tags={**tags, "cause": code})
+    if isinstance(data.get("rssi_before"), (int, float)):
+        metrics.gauge("device.rssi_before_drop", data["rssi_before"], tags)
+    await db.devices.update_one({"_id": device_id}, {"$set": {"diagnosis.connection": diag}})
+    level = logging.INFO if code in ("power_loss",) and data.get("cause") == "boot" else logging.WARNING
+    log.log(level, "Device reconnected: %s", text,
+            extra={"device_id": device_id, "cause": code, "down_s": down, "rssi_before": data.get("rssi_before"),
+                   "wifi_reason": data.get("wifi_reason"), "reset_reason": data.get("reset_reason")})
+    if data.get("cause") != "boot" or code != "power_loss":
+        metrics.event(f"[AgriGuard] {device_id} nối lại – {CAUSE_TEXT.get(code, code)}", text,
+                      alert_type="warning", tags=[f"device_id:{device_id}", f"cause:{code}"])
+    await _attach_note(device_id, ("device_offline", "power_brownout"), f"Chẩn đoán từ thiết bị: {text}", diag)
+
+
+async def _on_pump_run(site: str, device_id: str, data: dict, ts: datetime) -> None:
+    rt = runtime.get(device_id)
+    tags = device_tags(device_id, site, data.get("zone"), data.get("source"))
+    first = data.get("first_flow_ms")
+    if isinstance(first, (int, float)) and first >= 0:
+        metrics.histogram("pump.prime_ms", first, tags)
+    metrics.gauge("pump.run_pulses", data.get("pulses"), tags)
+    cfg = await db.get_settings_cached()
+    res = diagnose_pump_run(data, cfg["pump"]["min_flow_lpm"])
+    if not res:
+        return
+    code, text = res
+    diag = {"cause": code, "text": text, "at": ts, "seconds": data.get("seconds"), "pulses": data.get("pulses"),
+            "soil_start": data.get("soil_start"), "soil_end": data.get("soil_end")}
+    rt.last_pump_diag = diag
+    metrics.increment("pump.dry_run_diagnosis", tags={**tags, "cause": code})
+    await db.devices.update_one({"_id": device_id}, {"$set": {"diagnosis.pump": diag}})
+    log.warning("Pump run diagnosis: %s", text, extra={"device_id": device_id, "cause": code,
+                                                       "pulses": data.get("pulses"), "seconds": data.get("seconds")})
+    await _attach_note(device_id, ("pump_dry_run", "pump_low_flow"), f"Chẩn đoán lần bơm: {text}", diag)
 
 
 def latency_p95(seconds: int = 60) -> float | None:

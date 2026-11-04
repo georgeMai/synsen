@@ -113,6 +113,9 @@ void tftLine(int y, uint16_t color, const char *fmt, ...);
 void drawTft();
 void tftInit();
 void tftCheck(bool afterSwitch);
+void connTick(uint32_t now);
+void publishReconnect(uint32_t now);
+void publishPumpRun(const char *why);
 
 // ============================================================
 //  Đối tượng toàn cục
@@ -175,6 +178,20 @@ uint8_t  tftModeOk = 0;                 // giá trị RDMODE lúc màn hình ch�
 uint32_t tftCheckAtMs = 0;              // hẹn kiểm tra màn hình sau khi relay đổi trạng thái
 uint32_t tftReinits = 0;
 
+// ---- Chẩn đoán (0.5.4): ESP32 tự kể vì sao mất kết nối / vì sao bơm không ra nước ----
+bool     everConnected = false;         // lần nối MQTT đầu tiên sau khi khởi động -> cause "boot"
+bool     mqttWasConnected = false;
+uint32_t mqttDownSinceMs = 0;           // lúc phát hiện mất MQTT (0 = đang kết nối)
+bool     downWifiLost = false;          // trong lúc mất MQTT có mất cả Wi-Fi không
+bool     downPortal = false;            // có tự mở trang cấu hình không
+int      lastRssiOk = 0, rssiAtDrop = 0;
+int      mqttStateAtDrop = 0;
+uint8_t  lastWifiReason = 0;            // mã lý do ngắt Wi-Fi của ESP-IDF (201 NO_AP_FOUND, 200 BEACON_TIMEOUT...)
+bool     pumpOnAtDrop = false, mistOnAtDrop = false;
+uint32_t lastRelaySwitchMs = 0, relayAgoAtDropMs = UINT32_MAX;
+uint32_t runPulses = 0, runEdges = 0, runFirstFlowMs = 0;   // lần bơm hiện tại
+float    runSoilStart = NAN;
+
 // ============================================================
 //  Relay
 // ============================================================
@@ -217,6 +234,7 @@ void flowGuardTick(uint32_t now) {
   noInterrupts();
   uint32_t e = flowEdges; flowEdges = 0;
   interrupts();
+  if (pump.on) runEdges += e;
   if (e > FLOW_STORM_EDGES) {
     flowAttach(false);
     flowNoise = true;
@@ -333,6 +351,7 @@ void publishTelemetry() {
   doc["flow_noise"] = flowNoise;
   doc["flow_noise_count"] = flowNoiseCount;
   doc["rssi_dbm"] = WiFi.RSSI();
+  if (WiFi.status() == WL_CONNECTED) lastRssiOk = doc["rssi_dbm"].as<int>();
   publishJson(T_TELEMETRY, doc, false);
 }
 
@@ -350,13 +369,39 @@ void setActuator(Actuator &a, bool on, uint32_t durationS, const char *why) {
   } else {
     a.autoOffAtMs = 0;
   }
+  bool pumpStarted = (&a == &pump) && on && !a.on;
+  bool pumpStopped = (&a == &pump) && !on && a.on;
+  if (pumpStarted) { runPulses = 0; runEdges = 0; runFirstFlowMs = 0; runSoilStart = soilPct; }
   if (a.on != on) {
+    lastRelaySwitchMs = millis();
     telemetryNow = true;                 // báo trạng thái mới ngay, không chờ chu kỳ telemetry
     tftCheckAtMs = millis() + 400;       // nhiễu relay có thể làm treo TFT -> kiểm tra lại
     if (tftCheckAtMs == 0) tftCheckAtMs = 1;
   }
   a.on = on;
   Serial.printf("[ACT] %s -> %s (%s)\n", a.name, on ? "ON" : "OFF", why);
+  if (pumpStopped) publishPumpRun(why);
+}
+
+// Kết quả một lần bơm: số xung YF-S201, thời gian mồi nước, độ ẩm đất trước/sau -> backend chẩn đoán
+// "bơm chạy khô": hết nước / tắc (0 xung, đất không đổi), cảm biến lưu lượng hỏng (0 xung nhưng đất ẩm lên),
+// dây tín hiệu nhiễu (có cạnh nhưng không có xung hợp lệ), mồi nước chậm (xung đầu tiên đến muộn).
+void publishPumpRun(const char *why) {
+  JsonDocument doc;
+  baseFields(doc);
+  doc["type"] = "pump_run";
+  doc["actuator"] = "pump";
+  doc["detail"] = why;
+  doc["seconds"] = (millis() - pump.onSinceMs) / 1000.0f;
+  doc["pulses"] = runPulses;
+  doc["edges"] = runEdges;
+  doc["liters"] = runPulses / FLOW_PULSES_PER_LITER;
+  doc["first_flow_ms"] = runFirstFlowMs ? (int32_t)runFirstFlowMs : -1;
+  if (!isnan(runSoilStart)) doc["soil_start"] = runSoilStart;
+  if (soilOk) doc["soil_end"] = soilPct;
+  doc["flow_noise_count"] = flowNoiseCount;
+  doc["rssi_dbm"] = WiFi.RSSI();
+  publishJson(T_EVENT, doc, false);
 }
 
 void lockActuator(Actuator &a, const char *reason) {
@@ -434,6 +479,10 @@ void safetyTick() {
   interrupts();
   flowLpm = p * 60.0f / FLOW_PULSES_PER_LITER;      // xung/giây -> L/phút
   flowLitersTotal += p / FLOW_PULSES_PER_LITER;
+  if (pump.on) {
+    runPulses += p;
+    if (p && !runFirstFlowMs) runFirstFlowMs = millis() - pump.onSinceMs;
+  }
   bool flowing = flowLpm >= PUMP_MIN_FLOW_LPM;
   uint32_t now = millis();
 
@@ -519,6 +568,7 @@ void onPortalSave() {
 void openPortal(bool byUser) {
   if (wm.getConfigPortalActive()) return;
   portalByUser = byUser;
+  if (mqttDownSinceMs) downPortal = true;
   Serial.printf("[WIFI] mở trang cấu hình: Wi-Fi \"%s\" -> http://192.168.4.1\n", AP_NAME);
   wm.startConfigPortal(AP_NAME, PORTAL_PASSWORD);   // không chặn: loop() vẫn chạy an toàn bơm
 }
@@ -600,11 +650,61 @@ void ensureMqtt() {
     lastMqttOkMs = millis();
     mqtt.subscribe(T_CMD, 1);
     publishStatus(true);
+    publishReconnect(millis());
     Serial.printf("[MQTT] connected %s:%u\n", net.host, net.port);
   } else {
     // rc=-2: không tới được broker (sai host/port, tường lửa); rc=4/5: sai user/password
     Serial.printf("[MQTT] connect %s:%u failed rc=%d\n", net.host, net.port, mqtt.state());
   }
+}
+
+// Theo dõi lúc rớt MQTT: ghi lại RSSI, trạng thái bơm/phun, thời điểm relay vừa đóng/ngắt
+void connTick(uint32_t now) {
+  bool conn = mqtt.connected();
+  if (mqttWasConnected && !conn) {
+    mqttDownSinceMs = now ? now : 1;
+    rssiAtDrop = lastRssiOk;
+    mqttStateAtDrop = mqtt.state();
+    downWifiLost = WiFi.status() != WL_CONNECTED;
+    downPortal = false;
+    pumpOnAtDrop = pump.on;
+    mistOnAtDrop = mist.on;
+    relayAgoAtDropMs = lastRelaySwitchMs ? now - lastRelaySwitchMs : UINT32_MAX;
+    Serial.printf("[MQTT] mất kết nối, state=%d rssi=%d\n", mqttStateAtDrop, rssiAtDrop);
+  }
+  if (mqttDownSinceMs && WiFi.status() != WL_CONNECTED) downWifiLost = true;
+  mqttWasConnected = conn;
+}
+
+// Ngay sau khi nối lại MQTT: báo vì sao vừa mất kết nối và mất bao lâu (event "reconnected")
+void publishReconnect(uint32_t now) {
+  JsonDocument doc;
+  baseFields(doc);
+  doc["type"] = "reconnected";
+  doc["fw_version"] = FW_VERSION;
+  doc["rssi_now"] = WiFi.RSSI();
+  if (!everConnected) {
+    doc["cause"] = "boot";                 // vừa khởi động: lý do nằm ở reset_reason
+    doc["detail"] = resetReasonStr();
+    doc["reset_reason"] = resetReasonStr();
+    doc["uptime_s"] = now / 1000;
+  } else if (mqttDownSinceMs) {
+    const char *cause = downPortal ? "portal" : downWifiLost ? "wifi_lost" : "mqtt_only";
+    doc["cause"] = cause;
+    doc["detail"] = cause;
+    doc["down_s"] = (now - mqttDownSinceMs) / 1000;
+    doc["wifi_reason"] = lastWifiReason;
+    doc["rssi_before"] = rssiAtDrop;
+    doc["mqtt_state"] = mqttStateAtDrop;
+    doc["pump_on_at_drop"] = pumpOnAtDrop;
+    doc["mist_on_at_drop"] = mistOnAtDrop;
+    if (relayAgoAtDropMs != UINT32_MAX) doc["relay_switch_ago_ms"] = relayAgoAtDropMs;
+  } else {
+    return;
+  }
+  publishJson(T_EVENT, doc, false);
+  everConnected = true;
+  mqttDownSinceMs = 0;
 }
 
 // ============================================================
@@ -650,8 +750,9 @@ void drawTft() {
     tftLine(40, ILI9341_RED, "DHT11: LOI");
     tftLine(64, ILI9341_RED, "");
   }
-  if (soilOk) tftLine(88, ILI9341_WHITE, "Do am dat: %.0f %%", soilPct);
-  else        tftLine(88, ILI9341_RED,   "Cam bien dat: LOI");
+  // Kèm số ADC thô để hiệu chuẩn SOIL_RAW_DRY / SOIL_RAW_WET ngay tại chỗ
+  if (soilOk) tftLine(88, ILI9341_WHITE, "Dat:%3.0f%% ADC %4d", soilPct, soilRaw);
+  else        tftLine(88, ILI9341_RED,   "Dat: LOI  ADC %4d", soilRaw);
   tftLine(120, pump.lockout ? ILI9341_RED : (pump.on ? ILI9341_CYAN : ILI9341_LIGHTGREY),
           "Bom: %s", pump.lockout ? "KHOA" : (pump.on ? "BAT" : "TAT"));
   tftLine(144, ILI9341_WHITE, "Luu luong: %.2f", flowLpm);
@@ -698,12 +799,16 @@ void setup() {
   loadNetConfig();
   mqtt.setServer(net.host, net.port);
   mqtt.setBufferSize(1024);
-  mqtt.setKeepAlive(15);
+  mqtt.setKeepAlive(MQTT_KEEPALIVE_S);
+  mqtt.setSocketTimeout(MQTT_SOCKET_TIMEOUT_S);
   mqtt.setCallback(onMqttMessage);
 
   // ---- Wi-Fi ----
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
+  WiFi.setSleep(false);                   // tắt modem-sleep: tránh trễ / rớt gói làm broker ngắt "exceeded timeout"
+  WiFi.onEvent([](WiFiEvent_t, WiFiEventInfo_t info) { lastWifiReason = info.wifi_sta_disconnected.reason; },
+               ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
   wm.setHostname(DEVICE_ID);
   wm.setTitle("AgriGuard " DEVICE_ID);
   wm.addParameter(&pHost);
@@ -745,6 +850,7 @@ void loop() {
   buttonTick(now);
   ensureMqtt();
   mqtt.loop();
+  connTick(now);
   if (mqtt.connected()) lastMqttOkMs = now;
 
   static uint32_t tFlowGuard = 0;

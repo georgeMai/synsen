@@ -217,7 +217,8 @@ async def weather_profile(device_id: str, days: float = 7) -> dict[int, dict]:
 
 async def normal_flow_lpm(device_id: str, cfg: dict) -> Optional[float]:
     evs = await db.irrigation_events.find(
-        {"device_id": device_id, "liters": {"$gte": cfg["irrigation"]["min_liters"]}, "pump_seconds": {"$gte": 3}},
+        {"device_id": device_id, "liters": {"$gte": cfg["irrigation"]["min_liters"]}, "pump_seconds": {"$gte": 3},
+         "reason": {"$ne": "sensor_changed"}},
         {"liters": 1, "pump_seconds": 1}).sort("ended_at", -1).limit(15).to_list(15)
     flows = [e["liters"] / e["pump_seconds"] * 60 for e in evs if e.get("pump_seconds")]
     return round(median(flows), 3) if len(flows) >= 3 else None

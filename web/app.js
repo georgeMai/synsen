@@ -34,7 +34,7 @@
     opened: "Mở sự cố", detected: "Phát hiện thêm", acknowledged: "Tiếp nhận", resolve_requested: "Báo đã xử lý",
     verification_started: "Bắt đầu kiểm chứng", verified: "Kiểm chứng đạt – đóng sự cố", verification_failed: "Kiểm chứng KHÔNG đạt",
     condition_cleared: "Điều kiện lỗi đã hết", condition_returned: "Lỗi xuất hiện lại", monitor_recovered: "Datadog: monitor OK", note: "Ghi chú",
-    datadog_signal: "Đã gửi sang Datadog", datadog_trace: "Datadog APM trace",
+    datadog_signal: "Đã gửi sang Datadog", datadog_trace: "Datadog APM trace", diagnosis: "Chẩn đoán nguyên nhân",
   };
 
   // ------------------------------------------------------------------ API
@@ -287,7 +287,7 @@
     return (i.timeline || []).map((t) => {
       const link = t.trace_id && app ? `https://${app}/apm/trace/${t.trace_id}` : t.link;
       const a = link ? ` <a href="${esc(link)}" target="_blank" rel="noopener">${t.trace_id ? "mở trace" : "mở monitor"} ↗</a>` : "";
-      return `<li class="${t.actor === "datadog" ? "dd" : ""}"><time>${fmtTime.format(new Date(t.at))}</time><b>${esc(TL_ACTIONS[t.action] || t.action)}</b>
+      return `<li class="${t.actor === "datadog" ? "dd" : t.action === "diagnosis" ? "diag" : ""}"><time>${fmtTime.format(new Date(t.at))}</time><b>${esc(TL_ACTIONS[t.action] || t.action)}</b>
         <span class="muted">(${esc(DETECTORS[t.actor] || t.actor)})</span> ${esc(t.note || "")}${a}</li>`;
     }).join("");
   }
@@ -360,6 +360,7 @@
     ["dry_run", "Bơm chạy khô", "Hết nước / tắc ống: bơm chạy nhưng lưu lượng = 0"],
     ["leak", "Rò nước / relay kẹt", "Có dòng chảy khi bơm đang tắt"],
     ["mist_empty", "Máy phun hết nước", "Phun sương không làm tăng độ ẩm"],
+    ["flow_sensor_broken", "Cảm biến lưu lượng hỏng", "Nước vẫn tới gốc nhưng YF‑S201 không phát xung → báo chạy khô, chẩn đoán đúng nguyên nhân"],
     ["clog", "Tắc lọc / bơm yếu", "Lưu lượng còn ~45% mức bình thường đã học (phát hiện ngay khi bơm chạy)"],
     ["hose_off", "Ống tưới tuột khỏi gốc", "Bơm chạy, có lưu lượng nhưng đất không ẩm lên (phát hiện sau lần tưới kế tiếp)"],
     ["dht_fail", "DHT11 hỏng", "Cảm biến nhiệt độ/độ ẩm trả lỗi"],

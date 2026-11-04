@@ -3,7 +3,7 @@
 //  AgriGuard ESP32 – cấu hình phần cứng & ngưỡng an toàn cục bộ
 // ============================================================
 
-#define FW_VERSION "0.5.2"
+#define FW_VERSION "0.5.5"
 #define SITE_ID    "farm-a"
 #define DEVICE_ID  "esp32-01"
 #define ZONE_ID    "bed-1"
@@ -11,7 +11,7 @@
 // ---------- Chân GPIO ----------
 #define PIN_DHT         4    // DHT11 DATA
 #define PIN_SOIL        34   // Cảm biến ẩm đất (AO) – BẮT BUỘC ADC1 (GPIO32–39) vì ADC2 không dùng được khi bật Wi-Fi
-#define PIN_FLOW        35   // YF-S201 dây vàng, qua cầu phân áp 10k/20k (5V -> 3.3V)
+#define PIN_FLOW        35   // YF-S401 dây vàng, qua cầu phân áp 10k/20k (xung ~4,7V -> ~3,1V)
 #define PIN_PUMP_RELAY  26   // IN relay bơm
 #define PIN_MIST_RELAY  25   // IN relay phun sương (GPIO27 đã dùng cho TFT DC)
 
@@ -46,8 +46,10 @@
 #define SOIL_RAW_WET  1763   // que trong nước -> 100%
 #define SOIL_RAW_MIN_VALID  50     // < giá trị này: nghi chạm GND / mất nguồn cảm biến
 #define SOIL_RAW_MAX_VALID  4096   // cảm biến điện trở: 4095 = đất rất khô, KHÔNG coi là lỗi
-#define FLOW_PULSES_PER_LITER 450.0f  // ~7.5 Hz mỗi L/phút; hiệu chuẩn bằng chai 1 lít
-#define FLOW_MIN_PULSE_US   2000      // bỏ các cạnh cách nhau < 2 ms (nhiễu), YF-S201 tối đa ~225 Hz
+// YF-S401 (0,3–6 L/phút, ống 6 mm): F = 98·Q Hz -> 98·60 = 5880 xung / lít (±10%, nên hiệu chuẩn bằng chai 1 lít)
+// (YF-S201 cũ: 7,5·Q -> 450 xung / lít)
+#define FLOW_PULSES_PER_LITER 5880.0f
+#define FLOW_MIN_PULSE_US   800       // bỏ cạnh cách nhau < 0,8 ms (nhiễu); YF-S401 tối đa 6 L/phút = 588 Hz (1,7 ms)
 #define FLOW_STORM_EDGES    100       // > 100 cạnh / 50 ms (= 2 kHz) -> chắc chắn là nhiễu
 #define FLOW_NOISE_PAUSE_MS 10000     // tạm ngắt ngắt 10 s rồi thử lại
 
@@ -72,5 +74,10 @@
 #define PIN_CONFIG_BUTTON       0     // nút BOOT trên board: giữ 3 giây = mở trang cấu hình; giữ 10 giây = xoá cấu hình
 #define WIFI_CONNECT_TIMEOUT_S  15    // thời gian thử mạng đã lưu khi khởi động
 #define WIFI_RETRY_MS           10000 // khi mất Wi-Fi: thử kết nối lại mạng cũ mỗi 10 giây
-#define WIFI_PORTAL_AFTER_S     60    // mất Wi-Fi quá ngần này giây -> tự mở trang cấu hình
-#define PORTAL_TIMEOUT_S        300   // trang cấu hình tự đóng sau 5 phút không ai cài -> quay lại thử mạng cũ
+// 0.5.3: trước đây 60 giây -> Wi-Fi chập chờn hơn 1 phút là mở trang cấu hình 5 phút và KHÔNG thử lại mạng cũ
+// trong lúc đó => thiết bị offline ~6 phút (thấy trong log Mosquitto). Giờ chỉ tự mở trang cấu hình khi mất mạng lâu
+// (chuyển chỗ đặt thiết bị); muốn mở ngay thì giữ nút BOOT 3 giây.
+#define WIFI_PORTAL_AFTER_S     600   // mất Wi-Fi quá 10 phút -> tự mở trang cấu hình
+#define PORTAL_TIMEOUT_S        180   // trang cấu hình tự đóng sau 3 phút không ai cài -> quay lại thử mạng cũ
+#define MQTT_KEEPALIVE_S        30    // 15 giây quá sát khi đi qua Internet: một lần nghẽn ngắn là broker ngắt
+#define MQTT_SOCKET_TIMEOUT_S   5     // không để connect()/publish() chặn loop quá 5 giây (mặc định 15)
