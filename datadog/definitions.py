@@ -391,6 +391,22 @@ MONITORS = [
                     "groupby_simple_monitor": False},
     },
     {
+        "name": "[AgriGuard] Web dashboard lỗi phía người dùng (RUM)",
+        "type": "rum alert",
+        "query": 'rum("service:agriguard-web @type:error").rollup("count").last("10m") > 5',
+        "message": (
+            "{{#is_alert}}⚠️ **{{value}} lỗi trên trình duyệt người vận hành trong 10 phút** – nút bật/tắt bơm, "
+            "\"Đã xử lý\" hoặc tải biểu đồ có thể đang hỏng dù backend vẫn chạy.\n\n"
+            "**Điều tra:** Digital Experience → RUM → Explorer, lọc `service:agriguard-web @type:error`; xem "
+            "`@context.api_path`, `@context.device`; mở phiên → tab Traces để nhảy sang trace backend của đúng request lỗi."
+            "{{/is_alert}}\n{{#is_recovery}}✅ Web hết lỗi phía người dùng.{{/is_recovery}}"
+        ),
+        "priority": 3,
+        "tags": [APP_TAG, "incident_type:web_errors", "team:agriguard", "signal:rum"],
+        "options": {"thresholds": {"critical": 5}, "notify_no_data": False, "include_tags": True,
+                    "require_full_window": False, "groupby_simple_monitor": False},
+    },
+    {
         "name": "[AgriGuard] Backend API không phản hồi",
         "type": "service check",
         "query": '"http.can_connect".over("instance:agriguard-backend-health").by("*").last(3).count_by_status()',

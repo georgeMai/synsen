@@ -46,6 +46,12 @@ class Settings:
     statsd_host: str = field(default_factory=lambda: _env("DD_AGENT_HOST", "localhost"))
     statsd_port: int = field(default_factory=lambda: _int("DD_DOGSTATSD_PORT", 8125))
     dd_site: str = field(default_factory=lambda: _env("DD_SITE", "datadoghq.com"))
+    # Datadog RUM cho web (Digital Experience → Add an Application → JS). Client token được thiết kế để nằm trong
+    # trình duyệt (chỉ gửi được dữ liệu RUM, không đọc được gì), nhưng vẫn để trong .env, không commit.
+    rum_application_id: str = field(default_factory=lambda: _env("DD_RUM_APPLICATION_ID", ""))
+    rum_client_token: str = field(default_factory=lambda: _env("DD_RUM_CLIENT_TOKEN", ""))
+    rum_session_sample: int = field(default_factory=lambda: _int("DD_RUM_SESSION_SAMPLE", 100))
+    rum_replay_sample: int = field(default_factory=lambda: _int("DD_RUM_REPLAY_SAMPLE", 0))
 
     # Bảo vệ API ghi (điều khiển, cài đặt, xử lý sự cố). Để trống = không yêu cầu.
     admin_token: str = field(default_factory=lambda: _env("ADMIN_TOKEN", ""))

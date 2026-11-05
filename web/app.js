@@ -50,9 +50,43 @@
     if (!res.ok) {
       let msg = res.statusText;
       try { const j = await res.json(); msg = typeof j.detail === "string" ? j.detail : JSON.stringify(j.detail); } catch { /* */ }
+      rum("addError", new Error(`API ${opts.method || "GET"} ${path}: ${msg}`), { api_path: path, http_status: res.status });
       throw new Error(msg);
     }
+    if (opts.method && opts.method !== "GET") rum("addAction", "api_write", { api_path: path, method: opts.method });
     return res.json();
+  }
+
+  // ------------------------------------------------------------------ Datadog RUM
+  // Bật khi backend có DD_RUM_APPLICATION_ID + DD_RUM_CLIENT_TOKEN (xem /api/meta → rum).
+  // allowedTracingUrls: mỗi lệnh gọi "api/..." mang header trace → trong Datadog nối phiên người dùng với trace backend.
+  const RUM_REGION = { "datadoghq.com": "us1", "us3.datadoghq.com": "us3", "us5.datadoghq.com": "us5",
+    "datadoghq.eu": "eu1", "ap1.datadoghq.com": "ap1", "ap2.datadoghq.com": "ap2" };
+  function rum(method, ...args) {
+    try { if (window.DD_RUM && typeof window.DD_RUM[method] === "function") window.DD_RUM[method](...args); } catch { /* RUM không được làm hỏng web */ }
+  }
+  function initRum(cfg) {
+    if (!cfg || window.DD_RUM) return;
+    const region = RUM_REGION[cfg.site] || "us1";
+    const script = document.createElement("script");
+    script.src = `https://www.datadoghq-browser-agent.com/${region}/v6/datadog-rum.js`;
+    script.async = true;
+    script.onload = () => {
+      if (!window.DD_RUM) return;
+      const apiBase = new URL("api/", location.href).href;
+      window.DD_RUM.init({
+        applicationId: cfg.applicationId, clientToken: cfg.clientToken, site: cfg.site,
+        service: cfg.service, env: cfg.env, version: cfg.version,
+        sessionSampleRate: cfg.sessionSampleRate, sessionReplaySampleRate: cfg.sessionReplaySampleRate,
+        trackUserInteractions: true, trackResources: true, trackLongTasks: true,
+        defaultPrivacyLevel: "mask-user-input",
+        allowedTracingUrls: [{ match: (url) => url.startsWith(apiBase), propagatorTypes: ["datadog", "tracecontext"] }],
+        traceSampleRate: 100,
+      });
+      rum("setGlobalContextProperty", "agri_site", S.meta.site);
+      if (S.selected) rum("setGlobalContextProperty", "device", S.selected);
+    };
+    document.head.appendChild(script);
   }
   const post = (p, body) => api(p, { method: "POST", body: JSON.stringify(body || {}) });
   const put = (p, body) => api(p, { method: "PUT", body: JSON.stringify(body || {}) });
@@ -848,6 +882,7 @@
     try {
       if (b.dataset.dev) {
         S.selected = b.dataset.dev; store.set("agri.device", S.selected);
+        rum("setGlobalContextProperty", "device", S.selected); rum("addAction", "select_device", { device: S.selected });
         if (S.tab === "water") $("#tab-water").innerHTML = '<p class="muted small"><span class="spinner"></span> Đang chạy aggregation pipeline…</p>';
         await refresh(); loadCharts(); if (S.tab === "sim") renderSim();
         if (S.tab === "water") renderWater(true).catch(console.warn);
@@ -912,6 +947,7 @@
   async function boot() {
     tickClock(); setInterval(tickClock, 1000);
     try { S.meta = await api("meta"); $("#site-name").textContent = `Khu ${S.meta.site} · giám sát tưới tiêu thời gian thực`; } catch { /* */ }
+    initRum(S.meta.rum);
     try { S.settings = await api("settings"); } catch { /* */ }
     await refresh(); refreshHealth(); loadCharts(); renderTab();
     setInterval(refresh, 3000);

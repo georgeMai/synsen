@@ -31,7 +31,7 @@ ESP32 (DHT11, cảm biến đất, YF-S201, relay bơm, relay phun sương)     
                         FastAPI backend (ingest · luật phát hiện · điều khiển tự động · kiểm chứng)
                          │                    │ DogStatsD metrics + JSON logs + APM traces
                          ▼                    ▼
-                   MongoDB Atlas         Datadog Agent ──► Datadog: dashboard · 33 monitors (metric + log) · 2 SLO
+                   MongoDB Atlas         Datadog Agent ──► Datadog: dashboard · 34 monitors (metric + log + RUM) · 2 SLO
                    (time series)                              │ webhook khi monitor bắn/hồi phục
                          ▲                                    ▼
                     Web dashboard  ◄──────────────  /api/webhooks/datadog → incident trong MongoDB
@@ -102,6 +102,18 @@ Tài liệu API (OpenAPI) ở <http://localhost:8000/docs>.
 Agent thu thập: custom metrics `agriguard.*` (DogStatsD), log JSON của mọi container (gắn `dd.trace_id`),
 APM traces của FastAPI và pymongo, HTTP check `/api/health` và TCP check broker MQTT.
 
+### RUM cho web (tùy chọn)
+
+1. Datadog → **Digital Experience → Add an Application → JS**, đặt tên `agriguard-web`, chọn cách cài **CDN async**.
+2. Chép `applicationId` và `clientToken` vào `.env` trên VPS: `DD_RUM_APPLICATION_ID=…`, `DD_RUM_CLIENT_TOKEN=…`
+   (không commit). Tùy chọn: `DD_RUM_SESSION_SAMPLE=100`, `DD_RUM_REPLAY_SAMPLE=20` để bật Session Replay.
+3. `docker compose up -d --force-recreate backend`, rồi mở lại web (Ctrl+F5). `/api/meta` trả `rum` khác `null` là đã bật.
+
+Web tự nạp SDK RUM, ghi lại lượt xem, click, lỗi JS, thời gian tải `api/...`, kèm `device` đang chọn. Mỗi lệnh gọi
+`api/...` mang header trace (`datadog` + `tracecontext`) → trong RUM mở một request là nhảy sang trace backend.
+Lỗi API được ghi bằng `addError` (có `api_path`, `http_status`); thao tác ghi (bật bơm, đã xử lý…) ghi `addAction`.
+Monitor "Web dashboard lỗi phía người dùng (RUM)" báo khi có hơn 5 lỗi trong 10 phút.
+
 ## 3. Kiểm thử
 
 **Unit test** (luật phát hiện sự cố, logic điều khiển, phân tích webhook – không cần MongoDB/MQTT):
@@ -146,6 +158,7 @@ Xem đầy đủ trong `.env.example`. Một số biến đáng chú ý:
 | `METRICS_ENABLED`, `DD_TRACE_ENABLED` | Bật gửi metrics/traces tới Datadog Agent |
 | `ADMIN_TOKEN` | Bảo vệ thao tác ghi trên web (nhập qua nút 🔑) |
 | `DATADOG_WEBHOOK_TOKEN` | Bí mật trong URL webhook |
+| `DD_RUM_APPLICATION_ID`, `DD_RUM_CLIENT_TOKEN` | Bật Datadog RUM cho web (để trống = tắt) |
 | `VERIFY_MIST_SECONDS` | Thời gian chạy thử phun sương khi kiểm chứng khắc phục (bơm: cài đặt `pump.verify_seconds` trên web, mặc định 5 giây) |
 | `SIM_DEVICES`, `SIM_DAY_MINUTES` | Số thiết bị giả lập, độ dài một “ngày” mô phỏng |
 

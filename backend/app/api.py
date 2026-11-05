@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import secrets
 from datetime import timedelta, timezone
 from typing import Literal, Optional
@@ -149,7 +150,19 @@ async def meta():
     return {"site": settings.site, "incident_types": {k: v.__dict__ for k, v in INCIDENT_TYPES.items()},
             "admin_required": bool(settings.admin_token), "sim_api": settings.enable_sim_api,
             "command_ack_timeout_s": settings.command_ack_timeout_s,
-            "datadog_app": _dd_app_host() if metrics.enabled else None}
+            "datadog_app": _dd_app_host() if metrics.enabled else None, "rum": rum_config()}
+
+
+def rum_config() -> dict | None:
+    """Cấu hình Datadog RUM cho web; None khi chưa đặt DD_RUM_APPLICATION_ID / DD_RUM_CLIENT_TOKEN."""
+    if not (settings.rum_application_id and settings.rum_client_token):
+        return None
+    return {"applicationId": settings.rum_application_id, "clientToken": settings.rum_client_token,
+            "site": (settings.dd_site or "datadoghq.com").strip().lower(), "service": "agriguard-web",
+            "env": settings.env, "version": os.environ.get("DD_VERSION", "1.0.0"),
+            "sessionSampleRate": max(0, min(100, settings.rum_session_sample)),
+            "sessionReplaySampleRate": max(0, min(100, settings.rum_replay_sample)),
+            "backendService": settings.service}
 
 
 def _dd_app_host() -> str:
