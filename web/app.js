@@ -300,6 +300,25 @@
   }
 
   // ---- Datadog trong quy trình điều tra: link sâu tới đúng monitor / log / sự kiện / trace của sự cố
+  // Bộ metric mở khi điều tra từng loại sự cố: [nhãn nút, metric (bỏ tiền tố agriguard.)]
+  const INC_METRICS = {
+    device_offline: ["kết nối", ["device.online", "device.rssi", "device.reconnects", "device.disconnect_seconds"]],
+    power_brownout: ["nguồn", ["device.reboots", "device.uptime", "pump.state", "mist.state"]],
+    pump_dry_run: ["bơm & nước", ["pump.state", "flow.rate", "pump.lockout", "pump.dry_run_diagnosis"]],
+    pump_low_flow: ["lưu lượng", ["flow.rate", "pump.state", "pump.prime_ms", "pump.run_pulses"]],
+    flow_without_pump: ["rò nước", ["flow.rate", "pump.state", "flow.volume_ml"]],
+    pump_overrun: ["thời gian bơm", ["pump.state", "pump.runtime_seconds", "soil.moisture"]],
+    mist_overrun: ["thời gian phun", ["mist.state", "mist.runtime_seconds", "air.humidity"]],
+    mist_ineffective: ["phun sương", ["mist.state", "air.humidity", "air.temperature"]],
+    dht_fault: ["DHT11", ["sensor.ok", "air.temperature", "air.humidity"]],
+    soil_sensor_fault: ["cảm biến đất", ["sensor.ok", "soil.raw", "soil.moisture"]],
+    soil_sensor_stuck: ["cảm biến đất", ["soil.moisture", "soil.raw", "pump.state"]],
+    command_timeout: ["lệnh", ["command.sent", "command.acked", "command.timeout", "command.ack_latency_ms"]],
+    ingest_latency: ["đường ống dữ liệu", ["ingest.latency_ms", "ingest.messages", "ingest.within_slo", "device.rssi"]],
+    irrigation_ineffective: ["phản hồi đất", ["irrigation.response_zscore", "irrigation.response_pct_per_liter", "soil.moisture", "flow.rate"]],
+    soil_response_high: ["phản hồi đất", ["irrigation.response_zscore", "irrigation.response_pct_per_liter", "soil.moisture"]],
+  };
+  const INC_METRICS_DEFAULT = ["thiết bị", ["flow.rate", "pump.state", "soil.moisture"]];
   const ddApp = () => S.meta?.datadog_app;
   function ddLinks(i) {
     const app = ddApp();
@@ -311,7 +330,7 @@
       ["Monitor", `https://${app}/monitors/manage?q=${q(`tag:"incident_type:${i.type}"`)}`],
       ["Logs", `https://${app}/logs?query=${q(`"${i._id}"`)}&from_ts=${from}&to_ts=${to}&live=false`],
       ["Sự kiện", `https://${app}/event/explorer?query=${q(`incident_id:${i._id}`)}&from_ts=${from}&to_ts=${to}&live=false`],
-      ["Metric thiết bị", `https://${app}/metric/explorer?exp_metric=${q("agriguard.flow.rate,agriguard.pump.state,agriguard.soil.moisture")}&exp_scope=${q(`device_id:${i.device_id}`)}&from_ts=${from}&to_ts=${to}&live=false`],
+      [`Metric: ${(INC_METRICS[i.type] || INC_METRICS_DEFAULT)[0]}`, `https://${app}/metric/explorer?exp_metric=${q((INC_METRICS[i.type] || INC_METRICS_DEFAULT)[1].map((m) => "agriguard." + m).join(","))}&exp_scope=${q(`device_id:${i.device_id}`)}&from_ts=${from}&to_ts=${to}&live=false`],
     ];
     return `<div class="ddlinks"><span class="small muted">Điều tra trên Datadog:</span>${links.map(([l, u]) =>
       `<a class="chip datadog" href="${u}" target="_blank" rel="noopener">${l} ↗</a>`).join("")}</div>`;
