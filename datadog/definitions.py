@@ -426,6 +426,68 @@ MONITORS = [
     },
 ]
 
+# ---- Phân vai monitor theo Detect – Investigate – Resolve (widget dashboard lọc theo tag) ----
+# dir:detect (+ detect:now | detect:degrading | detect:early), dir:investigate, dir:resolve
+DIR_ROLES = {
+    # Detect · đang hỏng – xử lý ngay
+    "Thiết bị mất kết nối": ("detect", "now"),
+    "Thiết bị mất kết nối quá 5 phút": ("detect", "now"),
+    "Bơm chạy khô / tắc ống": ("detect", "now"),
+    "Có dòng chảy khi bơm tắt (relay kẹt / rò)": ("detect", "now"),
+    "Backend API không phản hồi": ("detect", "now"),
+    "Broker MQTT không nhận kết nối": ("detect", "now"),
+    # Detect · đang suy giảm – còn chạy nhưng kém đi
+    "Lưu lượng bơm giảm (tắc một phần / bơm yếu)": ("detect", "degrading"),
+    "Cảm biến DHT11 lỗi": ("detect", "degrading"),
+    "Cảm biến độ ẩm đất lỗi": ("detect", "degrading"),
+    "Cảm biến độ ẩm đất bị đơ": ("detect", "degrading"),
+    "Phun sương không hiệu quả": ("detect", "degrading"),
+    "Bơm/phun sương chạy quá thời gian": ("detect", "degrading"),
+    "Thiết bị không xác nhận lệnh": ("detect", "degrading"),
+    "Đường ống dữ liệu chậm (p95 > 5s)": ("detect", "degrading"),
+    "Đất không phản hồi khi tưới (bất thường %/L)": ("detect", "degrading"),
+    "Đất ẩm lên bất thường so với lượng nước": ("detect", "degrading"),
+    "Web dashboard lỗi phía người dùng (RUM)": ("detect", "degrading"),
+    "Mô hình AI dự báo độ ẩm đất kém tin cậy": ("detect", "degrading"),
+    "Mô hình AI không được học lại": ("detect", "degrading"),
+    # Detect · sắp xảy ra – cảnh báo sớm (forecast, anomaly, AI)
+    "Dự báo cây sắp thiếu nước trong 12 giờ (forecast)": ("detect", "early"),
+    "Dự báo ESP32 cạn bộ nhớ trong 1 ngày (forecast)": ("detect", "early"),
+    "Lượng nước tưới bất thường (anomaly)": ("detect", "early"),
+    "Độ trễ xác nhận lệnh bất thường (anomaly)": ("detect", "early"),
+    "Lượng bản tin cảm biến bất thường": ("detect", "early"),
+    "Nguy cơ thiếu nước cao (AI dự báo)": ("detect", "early"),
+    "Nguy cơ stress nhiệt cao (AI dự báo)": ("detect", "early"),
+    # Investigate · monitor đã mang sẵn nguyên nhân
+    "ESP32 kết nối chập chờn": ("investigate", None),
+    "Wi‑Fi ESP32 yếu – nguy cơ mất kết nối": ("investigate", None),
+    "Broker MQTT ngắt thiết bị vì quá hạn keepalive (log)": ("investigate", None),
+    "ESP32 khởi động lại do sụt áp": ("investigate", None),
+    "Bơm chạy khô lặp lại": ("investigate", None),
+    "Cảm biến lưu lượng nghi hỏng": ("investigate", None),
+    "Bơm mồi nước chậm (mực nước thấp / khí trong ống hút)": ("investigate", None),
+    # Resolve · chất lượng khắc phục
+    "Liên tục báo đã sửa khi lỗi chưa được khắc phục (log)": ("resolve", None),
+}
+
+
+def _tag_dir_roles() -> None:
+    names = set()
+    for mon in MONITORS:
+        short = mon["name"].removeprefix("[AgriGuard] ")
+        names.add(short)
+        if short not in DIR_ROLES:
+            raise ValueError(f"Monitor chưa được phân vai D-I-R trong DIR_ROLES: {short}")
+        role, tier = DIR_ROLES[short]
+        mon["tags"] = [t for t in mon["tags"] if not t.startswith(("dir:", "detect:"))] + \
+            [f"dir:{role}"] + ([f"detect:{tier}"] if tier else [])
+    unused = set(DIR_ROLES) - names
+    if unused:
+        raise ValueError(f"DIR_ROLES có tên không khớp monitor nào: {sorted(unused)}")
+
+
+_tag_dir_roles()
+
 SLOS = [
     {
         "name": "[AgriGuard] Dữ liệu cảm biến được ghi trong 5 giây",
@@ -448,6 +510,7 @@ SLOS = [
 ]
 
 DASHBOARD_TITLE = "AgriGuard – IoT Irrigation Operations"
+DIR_DASHBOARD_TITLE = "AgriGuard – Detect · Investigate · Resolve"
 
 
 def _ts(title, *queries, display="line", palette=None):
@@ -471,6 +534,25 @@ def _qv(title, q, aggregator="last", precision=0, unit=None):
 
 def _top(title, q):
     return {"definition": {"type": "toplist", "title": title, "requests": [{"q": q}]}}
+
+
+def _monitors(title, tags: str):
+    return {"definition": {"type": "manage_status", "title": title, "query": f"tag:{APP_TAG} {tags}",
+                           "summary_type": "monitors", "display_format": "countsAndList", "sort": "status,asc",
+                           "color_preference": "background", "hide_zero_counts": True}}
+
+
+def _check(title, check):
+    return {"definition": {"type": "check_status", "title": title, "check": check, "grouping": "cluster",
+                           "tags": [APP_TAG]}}
+
+
+def _risk(title, q):
+    return {"definition": {"type": "query_value", "title": title, "precision": 2, "autoscale": False,
+                           "requests": [{"q": q, "aggregator": "max", "conditional_formats": [
+                               {"comparator": ">=", "value": 0.7, "palette": "white_on_red"},
+                               {"comparator": ">=", "value": 0.4, "palette": "white_on_yellow"},
+                               {"comparator": "<", "value": 0.4, "palette": "white_on_green"}]}]}}
 
 
 def _group(title, widgets):
@@ -627,6 +709,110 @@ def dashboard(slo_ids: list[str] | None = None) -> dict:
                                 "columns": ["service", "device_id", "incident_id"], "indexes": [],
                                 "message_display": "expanded-md", "show_date_column": True,
                                 "show_message_column": True, "sort": {"column": "time", "order": "desc"}}},
+            ]),
+        ],
+    }
+
+
+def _log_stream(title, query, columns):
+    return {"definition": {"type": "log_stream", "title": title, "query": query, "columns": columns, "indexes": [],
+                           "message_display": "expanded-md", "show_date_column": True, "show_message_column": True,
+                           "sort": {"column": "time", "order": "desc"}}}
+
+
+def dir_dashboard(slo_ids: list[str] | None = None) -> dict:
+    """Dashboard demo theo kịch bản D-I-R: mỗi nhóm trả lời một câu hỏi, monitor lọc theo tag dir:* / detect:*."""
+    d = "{$device_id}"
+    slos = [{"definition": {"type": "slo", "view_type": "detail", "slo_id": sid, "time_windows": ["7d"],
+                            "show_error_budget": True, "view_mode": "overall"}} for sid in slo_ids or []]
+    zscore = {"definition": {"type": "timeseries", "title": "Phản hồi đất/lít – độ lệch so với bình thường (z-score)",
+                             "show_legend": True, "legend_layout": "auto",
+                             "requests": [{"q": f"avg:agriguard.irrigation.response_zscore{d} by {{device_id}}",
+                                           "display_type": "line"}],
+                             "markers": [{"value": "y = -3", "display_type": "error dashed", "label": "nước không tới gốc"},
+                                         {"value": "y = 3", "display_type": "warning dashed", "label": "đất ẩm lên quá nhanh"}],
+                             "yaxis": {"min": "-8", "max": "8"}}}
+    return {
+        "title": DIR_DASHBOARD_TITLE,
+        "description": "Dashboard demo theo kịch bản Detect – Investigate – Resolve (ESP32 → MQTT → FastAPI → MongoDB → "
+                       "Datadog). Monitor được phân vai bằng tag dir:detect / dir:investigate / dir:resolve và "
+                       "detect:now / detect:degrading / detect:early. Tạo bởi datadog/bootstrap.py – sửa trong "
+                       "definitions.py, không sửa tay.",
+        "layout_type": "ordered",
+        "template_variables": [{"name": "device_id", "prefix": "device_id", "default": "*"}],
+        "widgets": [
+            _group("1. Overview – Hệ thống có ổn không?", [
+                _qv("Thiết bị online", "sum:agriguard.device.online{*}"),
+                _qv("Sự cố đang mở", "sum:agriguard.incident.open{*}"),
+                _check("Backend API (http check)", "http.can_connect"),
+                _check("Broker MQTT (tcp check)", "tcp.can_connect"),
+            ]),
+            _group("2. Detect – Có gì bất thường?", [
+                _monitors("Đang hỏng – xử lý ngay", 'tag:"detect:now"'),
+                _monitors("Đang suy giảm – còn chạy nhưng kém đi", 'tag:"detect:degrading"'),
+                _monitors("Sắp xảy ra – cảnh báo sớm", 'tag:"detect:early"'),
+                _ts("Bơm (1 = chạy) vs lưu lượng (L/phút)", f"max:agriguard.pump.state{d} by {{device_id}}",
+                    f"avg:agriguard.flow.rate{d} by {{device_id}}"),
+                _ts("Lỗi đang hoạt động theo loại", f"max:agriguard.fault.active{d} by {{fault}}", display="bars",
+                    palette="warm"),
+                _ts("Cảm biến hoạt động (1 = OK)", f"min:agriguard.sensor.ok{d} by {{device_id,sensor}}"),
+                _ts("Độ ẩm đất + dự báo (forecast)", f"avg:agriguard.soil.moisture{d} by {{device_id}}",
+                    f"forecast(avg:agriguard.soil.moisture{d} by {{device_id}}, 'linear', 1)"),
+                _ts("Nước tưới – dải bình thường (anomaly)",
+                    f"anomalies(sum:agriguard.flow.volume_ml{d}.as_count(), 'basic', 3)", display="bars"),
+                _risk("Nguy cơ thiếu nước 6 giờ tới (0–1)", f"max:agriguard.ai.risk.water_shortage{d}"),
+                _risk("Nguy cơ stress nhiệt 6 giờ tới (0–1)", f"max:agriguard.ai.risk.heat_stress{d}"),
+                zscore,
+            ]),
+            _group("3. Investigate – Vì sao xảy ra?", [
+                _monitors("Monitor chỉ ra nguyên nhân", 'tag:"dir:investigate"'),
+                _top("Nguyên nhân mất kết nối",
+                     f"top(sum:agriguard.device.reconnects{d} by {{cause}}.as_count(), 10, 'sum', 'desc')"),
+                _top("Nguyên nhân bơm chạy khô",
+                     f"top(sum:agriguard.pump.dry_run_diagnosis{d} by {{cause}}.as_count(), 10, 'sum', 'desc')"),
+                _ts("Thiết bị online & khởi động lại theo nguyên nhân", f"min:agriguard.device.online{d} by {{device_id}}",
+                    f"sum:agriguard.device.reboots{d} by {{reset_reason}}.as_count()"),
+                _ts("Thời gian mất kết nối (giây) theo nguyên nhân",
+                    f"max:agriguard.device.disconnect_seconds.max{d} by {{cause}}", display="bars"),
+                _ts("RSSI hiện tại và ngay trước khi rớt (dBm)", f"avg:agriguard.device.rssi{d} by {{device_id}}",
+                    f"min:agriguard.device.rssi_before_drop{d} by {{device_id}}"),
+                _ts("Thời gian mồi nước của bơm (ms)", f"avg:agriguard.pump.prime_ms.avg{d} by {{device_id}}"),
+                _ts("Phản hồi đất (%/L) từng lần tưới vs mức bình thường",
+                    f"avg:agriguard.irrigation.response_pct_per_liter{d} by {{device_id}}",
+                    f"avg:agriguard.irrigation.baseline_pct_per_liter{d} by {{device_id}}"),
+                _ts("Độ trễ ingest & ghi MongoDB p95 (ms)", "avg:agriguard.ingest.latency_ms.95percentile{*}",
+                    "avg:agriguard.mongo.write_latency_ms.95percentile{*}"),
+                _ts("Lệnh: gửi / xác nhận / quá hạn", "sum:agriguard.command.sent{*}.as_count()",
+                    "sum:agriguard.command.acked{*}.as_count()", "sum:agriguard.command.timeout{*}.as_count()",
+                    display="bars"),
+                _ts("API backend – request & lỗi (APM)",
+                    "sum:trace.fastapi.request.hits{service:agriguard-backend}.as_count()",
+                    "sum:trace.fastapi.request.errors{service:agriguard-backend}.as_count()", display="bars"),
+                _log_stream("Mosquitto: ngắt kết nối thiết bị",
+                            'service:agriguard-mqtt ("exceeded timeout" OR "session taken over" OR "not authorised")',
+                            ["service"]),
+                _log_stream("Chẩn đoán từ thiết bị (nối lại / lần bơm)",
+                            'service:agriguard-backend ("Device reconnected" OR "Pump run diagnosis")',
+                            ["service", "device_id", "cause"]),
+                _log_stream("Log cảnh báo & lỗi backend (mở dòng log → tab Trace)",
+                            "service:agriguard-backend status:(warn OR error)", ["service", "device_id", "incident_id"]),
+            ]),
+            _group("4. Resolve – Đã khắc phục chưa, mất bao lâu?", [
+                _monitors("Chất lượng khắc phục", 'tag:"dir:resolve"'),
+                _top("Sự cố đang mở theo loại", "top(max:agriguard.incident.open{*} by {type}, 10, 'last', 'desc')"),
+                _top("MTTD trung bình theo loại (giây)",
+                     "top(avg:agriguard.incident.mttd_seconds.avg{*} by {type}, 10, 'mean', 'desc')"),
+                _top("MTTR trung bình theo loại (giây)",
+                     "top(avg:agriguard.incident.mttr_seconds.avg{*} by {type}, 10, 'mean', 'desc')"),
+                _ts("Sự cố mở vs đóng", "sum:agriguard.incident.opened{*}.as_count()",
+                    "sum:agriguard.incident.resolved{*}.as_count()", display="bars"),
+                _ts("Kiểm chứng thất bại (từ chối đóng khi chưa sửa)",
+                    "sum:agriguard.incident.verification_failed{*} by {type}.as_count()", display="bars"),
+            ] + slos),
+            _group("5. Môi trường", [
+                _ts("Nhiệt độ không khí (°C)", f"avg:agriguard.air.temperature{d} by {{device_id}}"),
+                _ts("Độ ẩm không khí (%)", f"avg:agriguard.air.humidity{d} by {{device_id}}"),
+                _ts("Độ ẩm đất (%)", f"avg:agriguard.soil.moisture{d} by {{device_id}}"),
             ]),
         ],
     }

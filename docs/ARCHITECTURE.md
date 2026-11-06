@@ -362,6 +362,16 @@ site Datadog của tài khoản – nếu không thấy mục này thì tài kho
 - **99%** bản tin telemetry được ghi vào MongoDB trong ≤ 5 giây kể từ lúc đo (`ingest.within_slo / ingest.messages`, 7 ngày).
 - **95%** lệnh điều khiển được ESP32 xác nhận trong ≤ 10 giây (`command.acked_in_time / command.sent`, 7 ngày).
 
+### Dashboard “AgriGuard – Detect · Investigate · Resolve” (dùng khi demo)
+Mỗi nhóm trả lời một câu hỏi; monitor được phân vai bằng tag (`DIR_ROLES` trong `datadog/definitions.py`):
+
+| Nhóm | Câu hỏi | Monitor (tag) | Widget |
+|---|---|---|---|
+| 1. Overview | Hệ thống có ổn không? | – | thiết bị online, sự cố mở, check status backend / broker |
+| 2. Detect | Có gì bất thường? | 6 `detect:now` (đang hỏng), 13 `detect:degrading` (suy giảm), 7 `detect:early` (forecast, anomaly, AI) | 3 Monitor Summary theo tầng, bơm vs lưu lượng, lỗi đang hoạt động, forecast độ ẩm đất, anomaly nước, điểm nguy cơ AI, z-score |
+| 3. Investigate | Vì sao xảy ra? | 7 `dir:investigate` (monitor đã mang nguyên nhân) | toplist nguyên nhân, RSSI trước khi rớt, thời gian mất kết nối, mồi nước, %/L, độ trễ, lệnh, APM, log Mosquitto / chẩn đoán / backend |
+| 4. Resolve | Đã khắc phục chưa, mất bao lâu? | 1 `dir:resolve` (báo đã sửa khi chưa sửa) | sự cố mở theo loại, MTTD, MTTR, mở vs đóng, kiểm chứng thất bại, 2 SLO |
+
 ### Dashboard “AgriGuard – IoT Irrigation Operations”
 Dashboard có template variable `device_id` và 8 nhóm:
 1. **Tổng quan:** số thiết bị online, sự cố mở, p95 ingest, p95 ack, danh sách monitors, SLO.

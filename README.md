@@ -31,7 +31,7 @@ ESP32 (DHT11, cảm biến đất, YF-S201, relay bơm, relay phun sương)     
                         FastAPI backend (ingest · luật phát hiện · điều khiển tự động · kiểm chứng)
                          │                    │ DogStatsD metrics + JSON logs + APM traces
                          ▼                    ▼
-                   MongoDB Atlas         Datadog Agent ──► Datadog: dashboard · 34 monitors (metric + log + RUM) · 2 SLO
+                   MongoDB Atlas         Datadog Agent ──► Datadog: 2 dashboard · 34 monitors (metric + log + RUM) · 2 SLO
                    (time series)                              │ webhook khi monitor bắn/hồi phục
                          ▲                                    ▼
                     Web dashboard  ◄──────────────  /api/webhooks/datadog → incident trong MongoDB
@@ -96,6 +96,10 @@ Tài liệu API (OpenAPI) ở <http://localhost:8000/docs>.
    python datadog/bootstrap.py apply
    ```
    Webhook cần `PUBLIC_BASE_URL` (URL backend truy cập được từ Internet) và `DATADOG_WEBHOOK_TOKEN`.
+   `apply` tạo 2 dashboard: "AgriGuard – IoT Irrigation Operations" (đầy đủ) và
+   "AgriGuard – Detect · Investigate · Resolve" (dùng khi demo). Ở dashboard D-I-R, monitor được lọc theo tag
+   `dir:detect` (chia `detect:now` / `detect:degrading` / `detect:early`), `dir:investigate`, `dir:resolve`;
+   bảng phân vai nằm ở `DIR_ROLES` trong `datadog/definitions.py` (thêm monitor mới mà quên phân vai thì `apply` báo lỗi).
    Khi chỉ chạy trên laptop, monitors và dashboard vẫn hoạt động. Riêng webhook (Datadog → incident) cần URL công khai.
 4. Đổi sang tài khoản Datadog khác chỉ cần thay key rồi chạy lại `apply`. Bản JSON của cấu hình nằm trong `datadog/*.json`.
 

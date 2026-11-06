@@ -156,18 +156,22 @@ def apply(dd: Datadog) -> None:
             failed.append(slo["name"])
             print(f"✗ SLO FAILED: {slo['name']}\n    {e}")
 
-    board = defs.dashboard(slo_ids)
     dashboards = dd.call("GET", "/api/v1/dashboard").get("dashboards", [])
-    match = next((d for d in dashboards if d["title"] == defs.DASHBOARD_TITLE), None)
-    if match:
-        res = dd.call("PUT", f"/api/v1/dashboard/{match['id']}", board)
-    else:
-        res = dd.call("POST", "/api/v1/dashboard", board)
-    print(f"✓ dashboard: https://app.{dd.site}{res.get('url', '')}")
+    for board in (defs.dashboard(slo_ids), defs.dir_dashboard(slo_ids)):
+        match = next((d for d in dashboards if d["title"] == board["title"]), None)
+        try:
+            if match:
+                res = dd.call("PUT", f"/api/v1/dashboard/{match['id']}", board)
+            else:
+                res = dd.call("POST", "/api/v1/dashboard", board)
+            print(f"✓ dashboard \"{board['title']}\" (id {res.get('id')}): https://app.{dd.site}{res.get('url', '')}")
+        except RuntimeError as e:
+            failed.append(board["title"])
+            print(f"✗ dashboard FAILED: {board['title']}\n    {e}")
     if failed:
         print(f"\n! {len(failed)} mục lỗi: {', '.join(failed)} – gửi phần thông báo lỗi ở trên để sửa, rồi chạy lại apply.")
     else:
-        print(f"\n✓ Hoàn tất: {len(defs.MONITORS)} monitors, {len(defs.SLOS)} SLO, 1 dashboard.")
+        print(f"\n✓ Hoàn tất: {len(defs.MONITORS)} monitors, {len(defs.SLOS)} SLO, 2 dashboard.")
 
 
 def delete(dd: Datadog) -> None:
@@ -178,7 +182,7 @@ def delete(dd: Datadog) -> None:
         dd.call("DELETE", f"/api/v1/slo/{s['id']}")
         print("✗ SLO", s["name"])
     for d in dd.call("GET", "/api/v1/dashboard").get("dashboards", []):
-        if d["title"] == defs.DASHBOARD_TITLE:
+        if d["title"] in (defs.DASHBOARD_TITLE, defs.DIR_DASHBOARD_TITLE):
             dd.call("DELETE", f"/api/v1/dashboard/{d['id']}")
             print("✗ dashboard", d["title"])
 
@@ -187,8 +191,10 @@ def export() -> None:
     (HERE / "monitors.json").write_text(json.dumps(defs.MONITORS, ensure_ascii=False, indent=2), encoding="utf-8")
     (HERE / "slos.json").write_text(json.dumps(defs.SLOS, ensure_ascii=False, indent=2), encoding="utf-8")
     (HERE / "dashboard.json").write_text(json.dumps(defs.dashboard(), ensure_ascii=False, indent=2), encoding="utf-8")
+    (HERE / "dashboard_dir.json").write_text(json.dumps(defs.dir_dashboard(), ensure_ascii=False, indent=2),
+                                             encoding="utf-8")
     (HERE / "webhook_payload.json").write_text(json.dumps(defs.WEBHOOK_PAYLOAD, indent=2), encoding="utf-8")
-    print("✓ wrote monitors.json, slos.json, dashboard.json, webhook_payload.json")
+    print("✓ wrote monitors.json, slos.json, dashboard.json, dashboard_dir.json, webhook_payload.json")
 
 
 if __name__ == "__main__":

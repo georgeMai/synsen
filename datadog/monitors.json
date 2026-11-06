@@ -9,7 +9,9 @@
       "app:agriguard",
       "incident_type:device_offline",
       "team:agriguard",
-      "notify:yes"
+      "notify:yes",
+      "dir:detect",
+      "detect:now"
     ],
     "options": {
       "notify_audit": false,
@@ -33,7 +35,9 @@
       "app:agriguard",
       "incident_type:pump_dry_run",
       "team:agriguard",
-      "notify:yes"
+      "notify:yes",
+      "dir:detect",
+      "detect:now"
     ],
     "options": {
       "notify_audit": false,
@@ -55,7 +59,9 @@
     "tags": [
       "app:agriguard",
       "incident_type:pump_low_flow",
-      "team:agriguard"
+      "team:agriguard",
+      "dir:detect",
+      "detect:degrading"
     ],
     "options": {
       "notify_audit": false,
@@ -77,7 +83,9 @@
     "tags": [
       "app:agriguard",
       "incident_type:flow_without_pump",
-      "team:agriguard"
+      "team:agriguard",
+      "dir:detect",
+      "detect:now"
     ],
     "options": {
       "notify_audit": false,
@@ -99,7 +107,9 @@
     "tags": [
       "app:agriguard",
       "incident_type:dht_fault",
-      "team:agriguard"
+      "team:agriguard",
+      "dir:detect",
+      "detect:degrading"
     ],
     "options": {
       "notify_audit": false,
@@ -121,7 +131,9 @@
     "tags": [
       "app:agriguard",
       "incident_type:soil_sensor_fault",
-      "team:agriguard"
+      "team:agriguard",
+      "dir:detect",
+      "detect:degrading"
     ],
     "options": {
       "notify_audit": false,
@@ -143,7 +155,9 @@
     "tags": [
       "app:agriguard",
       "incident_type:soil_sensor_stuck",
-      "team:agriguard"
+      "team:agriguard",
+      "dir:detect",
+      "detect:degrading"
     ],
     "options": {
       "notify_audit": false,
@@ -165,7 +179,9 @@
     "tags": [
       "app:agriguard",
       "incident_type:mist_ineffective",
-      "team:agriguard"
+      "team:agriguard",
+      "dir:detect",
+      "detect:degrading"
     ],
     "options": {
       "notify_audit": false,
@@ -187,7 +203,9 @@
     "tags": [
       "app:agriguard",
       "incident_type:pump_overrun",
-      "team:agriguard"
+      "team:agriguard",
+      "dir:detect",
+      "detect:degrading"
     ],
     "options": {
       "notify_audit": false,
@@ -209,7 +227,9 @@
     "tags": [
       "app:agriguard",
       "incident_type:command_timeout",
-      "team:agriguard"
+      "team:agriguard",
+      "dir:detect",
+      "detect:degrading"
     ],
     "options": {
       "notify_audit": false,
@@ -231,7 +251,8 @@
     "tags": [
       "app:agriguard",
       "incident_type:power_brownout",
-      "team:agriguard"
+      "team:agriguard",
+      "dir:investigate"
     ],
     "options": {
       "notify_audit": false,
@@ -253,7 +274,9 @@
     "tags": [
       "app:agriguard",
       "incident_type:ingest_latency",
-      "team:agriguard"
+      "team:agriguard",
+      "dir:detect",
+      "detect:degrading"
     ],
     "options": {
       "notify_audit": false,
@@ -276,7 +299,9 @@
     "tags": [
       "app:agriguard",
       "incident_type:irrigation_ineffective",
-      "team:agriguard"
+      "team:agriguard",
+      "dir:detect",
+      "detect:degrading"
     ],
     "options": {
       "notify_audit": false,
@@ -299,7 +324,9 @@
     "tags": [
       "app:agriguard",
       "incident_type:soil_response_high",
-      "team:agriguard"
+      "team:agriguard",
+      "dir:detect",
+      "detect:degrading"
     ],
     "options": {
       "notify_audit": false,
@@ -321,7 +348,9 @@
     "tags": [
       "app:agriguard",
       "incident_type:soil_drying_forecast",
-      "team:agriguard"
+      "team:agriguard",
+      "dir:detect",
+      "detect:early"
     ],
     "options": {
       "notify_audit": false,
@@ -344,7 +373,9 @@
     "tags": [
       "app:agriguard",
       "incident_type:heap_forecast",
-      "team:agriguard"
+      "team:agriguard",
+      "dir:detect",
+      "detect:early"
     ],
     "options": {
       "notify_audit": false,
@@ -367,7 +398,9 @@
     "tags": [
       "app:agriguard",
       "incident_type:water_usage_anomaly",
-      "team:agriguard"
+      "team:agriguard",
+      "dir:detect",
+      "detect:early"
     ],
     "options": {
       "notify_audit": false,
@@ -393,7 +426,9 @@
     "tags": [
       "app:agriguard",
       "incident_type:ack_latency_anomaly",
-      "team:agriguard"
+      "team:agriguard",
+      "dir:detect",
+      "detect:early"
     ],
     "options": {
       "notify_audit": false,
@@ -419,7 +454,9 @@
     "tags": [
       "app:agriguard",
       "incident_type:ingest_anomaly",
-      "team:agriguard"
+      "team:agriguard",
+      "dir:detect",
+      "detect:early"
     ],
     "options": {
       "notify_audit": false,
@@ -445,7 +482,9 @@
     "tags": [
       "app:agriguard",
       "incident_type:ai_model_unreliable",
-      "team:agriguard"
+      "team:agriguard",
+      "dir:detect",
+      "detect:degrading"
     ],
     "options": {
       "notify_audit": false,
@@ -468,7 +507,9 @@
     "tags": [
       "app:agriguard",
       "incident_type:ai_model_stale",
-      "team:agriguard"
+      "team:agriguard",
+      "dir:detect",
+      "detect:degrading"
     ],
     "options": {
       "notify_audit": false,
@@ -491,7 +532,9 @@
     "tags": [
       "app:agriguard",
       "incident_type:water_shortage_risk",
-      "team:agriguard"
+      "team:agriguard",
+      "dir:detect",
+      "detect:early"
     ],
     "options": {
       "notify_audit": false,
@@ -514,7 +557,9 @@
     "tags": [
       "app:agriguard",
       "incident_type:heat_stress_risk",
-      "team:agriguard"
+      "team:agriguard",
+      "dir:detect",
+      "detect:early"
     ],
     "options": {
       "notify_audit": false,
@@ -538,7 +583,8 @@
       "app:agriguard",
       "incident_type:device_flapping",
       "team:agriguard",
-      "notify:yes"
+      "notify:yes",
+      "dir:investigate"
     ],
     "options": {
       "notify_audit": false,
@@ -562,7 +608,9 @@
       "app:agriguard",
       "incident_type:device_offline",
       "team:agriguard",
-      "notify:yes"
+      "notify:yes",
+      "dir:detect",
+      "detect:now"
     ],
     "options": {
       "notify_audit": false,
@@ -585,7 +633,8 @@
     "tags": [
       "app:agriguard",
       "incident_type:wifi_weak",
-      "team:agriguard"
+      "team:agriguard",
+      "dir:investigate"
     ],
     "options": {
       "notify_audit": false,
@@ -609,7 +658,8 @@
       "app:agriguard",
       "incident_type:mqtt_keepalive",
       "team:agriguard",
-      "signal:logs"
+      "signal:logs",
+      "dir:investigate"
     ],
     "options": {
       "thresholds": {
@@ -632,7 +682,8 @@
       "app:agriguard",
       "incident_type:pump_dry_repeat",
       "team:agriguard",
-      "notify:yes"
+      "notify:yes",
+      "dir:investigate"
     ],
     "options": {
       "notify_audit": false,
@@ -655,7 +706,8 @@
       "app:agriguard",
       "incident_type:flow_sensor_suspect",
       "team:agriguard",
-      "notify:yes"
+      "notify:yes",
+      "dir:investigate"
     ],
     "options": {
       "notify_audit": false,
@@ -677,7 +729,8 @@
     "tags": [
       "app:agriguard",
       "incident_type:pump_slow_priming",
-      "team:agriguard"
+      "team:agriguard",
+      "dir:investigate"
     ],
     "options": {
       "notify_audit": false,
@@ -701,7 +754,8 @@
       "app:agriguard",
       "incident_type:verification_abuse",
       "team:agriguard",
-      "signal:logs"
+      "signal:logs",
+      "dir:resolve"
     ],
     "options": {
       "thresholds": {
@@ -725,7 +779,9 @@
       "app:agriguard",
       "incident_type:web_errors",
       "team:agriguard",
-      "signal:rum"
+      "signal:rum",
+      "dir:detect",
+      "detect:degrading"
     ],
     "options": {
       "thresholds": {
@@ -746,7 +802,9 @@
     "tags": [
       "app:agriguard",
       "incident_type:backend_down",
-      "team:agriguard"
+      "team:agriguard",
+      "dir:detect",
+      "detect:now"
     ],
     "options": {
       "thresholds": {
@@ -766,7 +824,9 @@
     "tags": [
       "app:agriguard",
       "incident_type:mqtt_down",
-      "team:agriguard"
+      "team:agriguard",
+      "dir:detect",
+      "detect:now"
     ],
     "options": {
       "thresholds": {

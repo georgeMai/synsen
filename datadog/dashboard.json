@@ -551,6 +551,312 @@
     {
       "definition": {
         "type": "group",
+        "title": "AI tưới – dự báo, lịch tưới & độ tin cậy mô hình",
+        "layout_type": "ordered",
+        "widgets": [
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Độ ẩm đất thật vs AI dự báo (1 giờ / 6 giờ tới)",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "q": "avg:agriguard.soil.moisture{$device_id} by {device_id}",
+                  "display_type": "line"
+                },
+                {
+                  "q": "avg:agriguard.ai.soil_forecast_1h{$device_id} by {device_id}",
+                  "display_type": "line"
+                },
+                {
+                  "q": "avg:agriguard.ai.soil_forecast_6h{$device_id} by {device_id}",
+                  "display_type": "line"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Sai số dự báo 1 giờ (|thật − dự báo|, %) và MAE 24 giờ",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "q": "avg:agriguard.ml.forecast_error_abs{$device_id} by {method}",
+                  "display_type": "line"
+                },
+                {
+                  "q": "avg:agriguard.ml.forecast_mae{$device_id} by {device_id}",
+                  "display_type": "line"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "query_value",
+              "title": "MAE kiểm định mô hình (%/giờ)",
+              "precision": 2,
+              "autoscale": true,
+              "requests": [
+                {
+                  "q": "avg:agriguard.ml.model.validation_mae{$device_id}",
+                  "aggregator": "last"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "query_value",
+              "title": "Kỹ năng so với trung bình (1 = hoàn hảo)",
+              "precision": 2,
+              "autoscale": true,
+              "requests": [
+                {
+                  "q": "avg:agriguard.ml.model.skill{$device_id}",
+                  "aggregator": "last"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "query_value",
+              "title": "Số mẫu huấn luyện",
+              "precision": 0,
+              "autoscale": true,
+              "requests": [
+                {
+                  "q": "avg:agriguard.ml.model.samples{$device_id}",
+                  "aggregator": "last"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Số lần học lại theo nguồn kích hoạt",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "q": "sum:agriguard.ml.retrains{*} by {trigger}.as_count()",
+                  "display_type": "bars"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Lịch tưới AI: lít dự kiến & phút tới lần tưới",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "q": "avg:agriguard.ai.plan.liters{$device_id} by {device_id}",
+                  "display_type": "line"
+                },
+                {
+                  "q": "avg:agriguard.ai.plan.minutes_until{$device_id} by {device_id}",
+                  "display_type": "line"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Nguy cơ thiếu nước / stress nhiệt (0–1)",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "q": "max:agriguard.ai.risk.water_shortage{$device_id} by {device_id}",
+                  "display_type": "line"
+                },
+                {
+                  "q": "max:agriguard.ai.risk.heat_stress{$device_id} by {device_id}",
+                  "display_type": "line"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Quyết định của bộ điều khiển AI",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "q": "sum:agriguard.control.decision{actuator:pump} by {reason}.as_count()",
+                  "display_type": "bars"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "definition": {
+        "type": "group",
+        "title": "Chẩn đoán mất kết nối & bơm chạy khô",
+        "layout_type": "ordered",
+        "widgets": [
+          {
+            "definition": {
+              "type": "toplist",
+              "title": "Nguyên nhân mất kết nối",
+              "requests": [
+                {
+                  "q": "top(sum:agriguard.device.reconnects{$device_id} by {cause}.as_count(), 10, 'sum', 'desc')"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Thiết bị online & khởi động lại theo nguyên nhân",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "q": "min:agriguard.device.online{$device_id} by {device_id}",
+                  "display_type": "line"
+                },
+                {
+                  "q": "sum:agriguard.device.reboots{$device_id} by {reset_reason}.as_count()",
+                  "display_type": "line"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Thời gian mất kết nối (giây) theo nguyên nhân",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "q": "max:agriguard.device.disconnect_seconds.max{$device_id} by {cause}",
+                  "display_type": "bars"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "RSSI hiện tại và RSSI ngay trước khi rớt (dBm)",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "q": "avg:agriguard.device.rssi{$device_id} by {device_id}",
+                  "display_type": "line"
+                },
+                {
+                  "q": "min:agriguard.device.rssi_before_drop{$device_id} by {device_id}",
+                  "display_type": "line"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "toplist",
+              "title": "Nguyên nhân bơm chạy khô",
+              "requests": [
+                {
+                  "q": "top(sum:agriguard.pump.dry_run_diagnosis{$device_id} by {cause}.as_count(), 10, 'sum', 'desc')"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Thời gian mồi nước của bơm (ms)",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "q": "avg:agriguard.pump.prime_ms.avg{$device_id} by {device_id}",
+                  "display_type": "line"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "timeseries",
+              "title": "Bơm bật vs lưu lượng",
+              "show_legend": true,
+              "legend_layout": "auto",
+              "requests": [
+                {
+                  "q": "max:agriguard.pump.state{$device_id} by {device_id}",
+                  "display_type": "line"
+                },
+                {
+                  "q": "avg:agriguard.flow.rate{$device_id} by {device_id}",
+                  "display_type": "line"
+                }
+              ]
+            }
+          },
+          {
+            "definition": {
+              "type": "log_stream",
+              "title": "Mosquitto: ngắt kết nối thiết bị",
+              "query": "service:agriguard-mqtt (\"exceeded timeout\" OR \"session taken over\" OR \"not authorised\")",
+              "columns": [
+                "service"
+              ],
+              "indexes": [],
+              "message_display": "inline",
+              "show_date_column": true,
+              "show_message_column": true,
+              "sort": {
+                "column": "time",
+                "order": "desc"
+              }
+            }
+          },
+          {
+            "definition": {
+              "type": "log_stream",
+              "title": "Chẩn đoán từ thiết bị (nối lại / lần bơm)",
+              "query": "service:agriguard-backend (\"Device reconnected\" OR \"Pump run diagnosis\")",
+              "columns": [
+                "service",
+                "device_id",
+                "cause"
+              ],
+              "indexes": [],
+              "message_display": "expanded-md",
+              "show_date_column": true,
+              "show_message_column": true,
+              "sort": {
+                "column": "time",
+                "order": "desc"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "definition": {
+        "type": "group",
         "title": "Sức khoẻ thiết bị",
         "layout_type": "ordered",
         "widgets": [
