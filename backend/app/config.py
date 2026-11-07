@@ -58,6 +58,9 @@ class Settings:
     # Token bắt buộc trong URL webhook mà Datadog gọi về.
     webhook_token: str = field(default_factory=lambda: _env("DATADOG_WEBHOOK_TOKEN", ""))
     public_base_url: str = field(default_factory=lambda: _env("PUBLIC_BASE_URL", ""))
+    # Link chia sẻ công khai của dashboard D-I-R (Datadog: Share → Share dashboard, ai có link cũng xem được,
+    # không cần đăng nhập) – để ban giám khảo kiểm tra. Trống = không hiện nút.
+    dd_public_dashboard_url: str = field(default_factory=lambda: _env("DD_PUBLIC_DASHBOARD_URL", ""))
     # Chuyển cảnh báo Datadog sang Zalo / WhatsApp (notify.py). Để trống = không gửi.
     zalo_bot_token: str = field(default_factory=lambda: _env("ZALO_BOT_TOKEN", ""))
     zalo_chat_id: str = field(default_factory=lambda: _env("ZALO_CHAT_ID", ""))

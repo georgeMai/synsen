@@ -150,7 +150,8 @@ async def meta():
     return {"site": settings.site, "incident_types": {k: v.__dict__ for k, v in INCIDENT_TYPES.items()},
             "admin_required": bool(settings.admin_token), "sim_api": settings.enable_sim_api,
             "command_ack_timeout_s": settings.command_ack_timeout_s,
-            "datadog_app": _dd_app_host() if metrics.enabled else None, "rum": rum_config()}
+            "datadog_app": _dd_app_host() if metrics.enabled else None, "rum": rum_config(),
+            "datadog_public": settings.dd_public_dashboard_url if settings.dd_public_dashboard_url.startswith("https://") else None}
 
 
 def rum_config() -> dict | None:

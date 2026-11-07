@@ -298,3 +298,5 @@ details.pipeline pre { font-size: 11.5px; max-height: 360px; overflow: auto; bac
 
 .timeline li.diag { background: color-mix(in srgb, var(--warning) 12%, var(--surface)); border-radius: 6px; }
 .timeline li.diag b { color: color-mix(in srgb, var(--warning) 70%, var(--text)); }
+
+.chip.datadog.public { background: #632ca6; color: #fff; border-color: #632ca6; font-weight: 600; }

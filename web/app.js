@@ -322,17 +322,23 @@
   const ddApp = () => S.meta?.datadog_app;
   function ddLinks(i) {
     const app = ddApp();
-    if (!app) return "";
+    const pub = S.meta?.datadog_public;
+    if (!app && !pub) return "";
     const from = new Date(i.fault_started_at || i.opened_at).getTime() - 10 * 60e3;
     const to = (i.resolved_at ? new Date(i.resolved_at).getTime() : Date.now()) + 10 * 60e3;
     const q = (s) => encodeURIComponent(s);
+    // Dashboard chia sẻ công khai: xem được không cần đăng nhập Datadog (cho ban giám khảo).
+    // Lọc sẵn thiết bị + khung thời gian của sự cố (Datadog bỏ qua tham số nếu dashboard không cho chọn).
+    const pubHtml = pub ? `<div class="ddlinks"><span class="small muted">Không cần đăng nhập:</span><a class="chip datadog public" href="${esc(
+      `${pub}${pub.includes("?") ? "&" : "?"}tpl_var_device_id=${q(i.device_id)}&from_ts=${from}&to_ts=${to}&live=false`)}" target="_blank" rel="noopener">Dashboard Datadog công khai ↗</a></div>` : "";
+    if (!app) return pubHtml;
     const links = [
       ["Monitor", `https://${app}/monitors/manage?q=${q(`tag:"incident_type:${i.type}"`)}`],
       ["Logs", `https://${app}/logs?query=${q(`"${i._id}"`)}&from_ts=${from}&to_ts=${to}&live=false`],
       ["Sự kiện", `https://${app}/event/explorer?query=${q(`incident_id:${i._id}`)}&from_ts=${from}&to_ts=${to}&live=false`],
       [`Metric: ${(INC_METRICS[i.type] || INC_METRICS_DEFAULT)[0]}`, `https://${app}/metric/explorer?exp_metric=${q((INC_METRICS[i.type] || INC_METRICS_DEFAULT)[1].map((m) => "agriguard." + m).join(","))}&exp_scope=${q(`device_id:${i.device_id}`)}&from_ts=${from}&to_ts=${to}&live=false`],
     ];
-    return `<div class="ddlinks"><span class="small muted">Điều tra trên Datadog:</span>${links.map(([l, u]) =>
+    return pubHtml + `<div class="ddlinks"><span class="small muted">Điều tra trên Datadog${pub ? " (cần tài khoản)" : ""}:</span>${links.map(([l, u]) =>
       `<a class="chip datadog" href="${u}" target="_blank" rel="noopener">${l} ↗</a>`).join("")}</div>`;
   }
   function timelineHtml(i) {
