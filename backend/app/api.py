@@ -5,7 +5,7 @@ import asyncio
 import logging
 import os
 import secrets
-from datetime import timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
@@ -15,7 +15,7 @@ from . import ai, notify
 from .analytics import water_report
 from .commands import commands
 from .config import settings
-from .db import DEFAULT_SETTINGS, db, deep_merge, utcnow
+from .db import DEFAULT_SETTINGS, as_utc, db, deep_merge, utcnow
 from .incidents import ACTIVE, _parse_tags, incidents
 from .irrigation import BASELINE_STATUSES, robust_baseline
 from .metrics import metrics
@@ -88,6 +88,8 @@ class HealthSettings(BaseModel):
     sensor_fail_count: int = Field(ge=1, le=20)
     rssi_weak_dbm: int = Field(ge=-100, le=-40)
     low_flow_ratio: Optional[float] = Field(None, ge=0.2, le=0.95)
+    short_drop_s: Optional[int] = Field(None, ge=10, le=1800)
+    short_drop_max_per_hour: Optional[int] = Field(None, ge=1, le=20)
 
 
 class AiSettings(BaseModel):
@@ -216,7 +218,27 @@ async def telemetry(device_id: str, minutes: int = Query(60, ge=5, le=7 * 24 * 6
         rows = await (await db.telemetry.aggregate(pipeline)).to_list(5000)
         points = [{"t": r["_id"], **{f: (round(r[f], 2) if r.get(f) is not None else None) for f in fields},
                    "pump_on": r["pump_on"], "mist_on": r["mist_on"]} for r in rows]
-    return {"device_id": device_id, "minutes": minutes, "bucket_s": bucket_s, "points": points}
+    return {"device_id": device_id, "minutes": minutes, "bucket_s": bucket_s, "points": points,
+            "offline": await _offline_spans(device_id, start)}
+
+
+async def _offline_spans(device_id: str, start: datetime) -> list[dict]:
+    """Các khoảng mất kết nối trong khung đang xem (từ sự cố device_offline) – biểu đồ tô vùng xám.
+    Không phụ thuộc bước gom dữ liệu, nên lần rớt vài chục giây vẫn thấy."""
+    now = utcnow()
+    spans: list[tuple[datetime, datetime]] = []
+    q = {"device_id": device_id, "type": "device_offline",
+         "$or": [{"status": {"$in": ["open", "acknowledged", "verifying"]}}, {"resolved_at": {"$gte": start}}]}
+    async for inc in db.incidents.find(q, {"drops": 1, "drop_started_at": 1, "fault_started_at": 1,
+                                           "condition_active": 1, "condition_cleared_at": 1}):
+        for d in inc.get("drops") or []:
+            spans.append((as_utc(d["from"]), as_utc(d["to"])))
+        if inc.get("condition_active", True):                 # đang mất kết nối
+            spans.append((as_utc(inc.get("drop_started_at") or inc["fault_started_at"]), now))
+        elif not inc.get("drops") and inc.get("condition_cleared_at"):   # sự cố cũ (trước khi có "drops")
+            spans.append((as_utc(inc["fault_started_at"]), as_utc(inc["condition_cleared_at"])))
+    return [{"from": int(max(a, start).timestamp() * 1000), "to": int(b.timestamp() * 1000),
+             "ongoing": b == now} for a, b in sorted(spans) if b >= start]
 
 
 def _bucket_in_python(rows: list[dict], bucket_s: int, fields: tuple[str, ...]) -> list[dict]:

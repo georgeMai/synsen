@@ -82,6 +82,18 @@
       });
     }
 
+    // vùng mất kết nối (từ sự cố device_offline – không phụ thuộc bước gom dữ liệu)
+    const offline = (opt.offline || []).filter(o => o.to >= t0 && o.from <= t1);
+    offline.forEach(o => {
+      const xa = x(Math.max(o.from, t0)), xb = x(Math.min(o.to, t1));
+      el("rect", { class: "offline-band", x: xa, y: m.t, width: Math.max(3, xb - xa), height: ih }, svg);
+      if (xb - xa >= 52) {
+        const lab = el("text", { class: "offline-label", x: (xa + xb) / 2, y: m.t + 12, "text-anchor": "middle" }, svg);
+        lab.textContent = "mất kết nối";
+      }
+    });
+    const crossesOffline = (a, b) => offline.some(o => o.from < b && o.to > a);
+
     // thresholds
     (opt.thresholds || []).forEach(t => {
       el("line", { class: "threshold", x1: m.l, x2: W - m.r, y1: y(t.v), y2: y(t.v) }, svg);
@@ -95,7 +107,7 @@
     pts.forEach(p => {
       const v = p[opt.key];
       if (v == null) { prev = null; return; }
-      const cmd = prev && p.t - prev.t <= gap ? "L" : "M";
+      const cmd = prev && p.t - prev.t <= gap && !crossesOffline(prev.t, p.t) ? "L" : "M";
       d += `${cmd}${x(p.t).toFixed(1)},${y(v).toFixed(1)}`;
       prev = p;
     });
@@ -115,6 +127,16 @@
       const r = svg.getBoundingClientRect();
       const px = (ev.clientX - r.left) * (W / r.width);
       const tt = t0 + ((px - m.l) / iw) * (t1 - t0);
+      const off = offline.find(o => tt >= o.from && tt <= o.to);
+      if (off) {
+        hover.style.display = "none";
+        const secs = Math.round((off.to - off.from) / 1000);
+        tip.textContent = `Mất kết nối ${fmtHMS.format(new Date(off.from))}–${off.ongoing ? "đang mất" : fmtHMS.format(new Date(off.to))} (${secs} giây)`;
+        tip.hidden = false;
+        tip.style.left = Math.min(window.innerWidth - tip.offsetWidth - 8, ev.clientX + 12) + "px";
+        tip.style.top = ev.clientY - 36 + "px";
+        return;
+      }
       let best = null, bd = Infinity;
       pts.forEach(p => { const dd = Math.abs(p.t - tt); if (dd < bd && p[opt.key] != null) { bd = dd; best = p; } });
       if (!best) return;

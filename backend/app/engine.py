@@ -70,7 +70,10 @@ async def health_tick() -> None:
         for (device_id, type_), inc in active_by_key.items():
             if (device_id == rt.device_id and type_ in RULE_TYPES and type_ not in found
                     and inc["status"] != "verifying"):
+                was_active = inc.get("condition_active", True)
                 await incidents.mark_condition_cleared(inc)
+                if type_ == "device_offline" and was_active:
+                    await incidents.close_offline_drop(inc, cfg["health"])
 
     # Cảnh báo "đất ẩm lên bất thường" đã TẮT trong Cài đặt (chậu nhỏ) -> đóng các sự cố loại này còn mở
     if not cfg["irrigation"].get("detect_high_response", True):

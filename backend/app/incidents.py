@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 import secrets
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from .db import as_utc, db, utcnow
@@ -52,6 +52,10 @@ class IncidentService:
                                                                          if datadog and datadog.get("link") else {})))
             elif not existing.get("condition_active", True):
                 pushes.append(_entry("system", "condition_returned", message))
+                if type_ == "device_offline":       # rớt lại lần nữa -> đếm lần rớt, bỏ trạng thái "cảnh báo ngắn"
+                    update["$set"].update(drop_started_at=as_utc(started_at) or now, ack_closes=False,
+                                          short_drop=False, severity=incident_type(type_).severity)
+                    update["$inc"] = {"drop_count": 1}
             if datadog:
                 update["$set"]["datadog"] = {**existing.get("datadog", {}), **datadog}
             if pushes:
@@ -70,6 +74,8 @@ class IncidentService:
             "mttd_s": max(0, round((now - started).total_seconds())),
             "timeline": [_entry(detected_by, "opened", message)],
         }
+        if type_ == "device_offline":
+            doc.update(drop_started_at=started, drop_count=1, drops=[])
         doc["timeline"] += _dd_entry(
             "Gửi sự kiện lên Event Stream, log WARNING \"Incident opened\", metric incident.opened & mttd_seconds "
             "– monitor và dashboard thấy sự cố này", signals=["event", "log", "metric"])
@@ -96,8 +102,51 @@ class IncidentService:
                                               "Dữ liệu không còn cho thấy lỗi – chờ người vận hành xác nhận")}},
             )
 
+    async def close_offline_drop(self, incident: dict, health: dict) -> None:
+        """Thiết bị vừa có dữ liệu trở lại: ghi khoảng mất kết nối; rớt NGẮN và ÍT -> hạ xuống cảnh báo
+        (người vận hành bấm "Tiếp nhận" là tắt, không cần kiểm chứng)."""
+        now = utcnow()
+        start = as_utc(incident.get("drop_started_at") or incident["fault_started_at"])
+        down = max(0, round((now - start).total_seconds()))
+        others = await db.incidents.count_documents({
+            "device_id": incident["device_id"], "type": "device_offline", "_id": {"$ne": incident["_id"]},
+            "opened_at": {"$gte": now - timedelta(hours=1)}})
+        drops_1h = others + int(incident.get("drop_count", 1))
+        short = down <= int(health.get("short_drop_s", 120)) and drops_1h <= int(health.get("short_drop_max_per_hour", 3))
+        sets: dict[str, Any] = {"short_drop": short, "ack_closes": short, "last_drop_seconds": down}
+        if short:
+            sets["severity"] = "warning"
+            note = (f"Kết nối trở lại sau {down} giây, dữ liệu bình thường ({drops_1h} lần rớt trong 1 giờ) – "
+                    "hạ xuống CẢNH BÁO rớt mạng ngắn. Bấm \"Tiếp nhận\" để tắt cảnh báo.")
+        else:
+            why = f"mất {down} giây" if down > int(health.get("short_drop_s", 120)) else f"{drops_1h} lần rớt trong 1 giờ"
+            note = f"Kết nối trở lại nhưng {why} – giữ mức NGHIÊM TRỌNG, cần xử lý và kiểm chứng."
+        await db.incidents.update_one(
+            {"_id": incident["_id"]},
+            {"$set": sets, "$push": {"drops": {"from": start, "to": now, "seconds": down},
+                                     "timeline": _entry("system", "offline_classified", note)}})
+        metrics.increment("device.drop_classified", tags={"device_id": incident["device_id"],
+                                                           "kind": "short" if short else "long_or_frequent"})
+
     async def acknowledge(self, incident_id: str, actor: str, note: str = "") -> dict | None:
         inc = await db.incidents.find_one({"_id": incident_id})
+        if inc and inc.get("ack_closes") and not inc.get("condition_active", True) \
+                and inc["status"] in ("open", "acknowledged"):
+            # Cảnh báo rớt mạng ngắn: dữ liệu đã bình thường -> "Tiếp nhận" = tắt cảnh báo (đóng sự cố)
+            now = utcnow()
+            if inc["status"] == "open":
+                await db.incidents.update_one(
+                    {"_id": incident_id},
+                    {"$set": {"status": "acknowledged", "acknowledged_at": now, "acknowledged_by": actor},
+                     "$push": {"timeline": _entry(actor, "acknowledged", note or "Tiếp nhận cảnh báo rớt mạng ngắn")}})
+                metrics.histogram("incident.time_to_ack_seconds", (now - as_utc(inc["opened_at"])).total_seconds(),
+                                  tags={"type": inc["type"]})
+            back = as_utc(inc.get("condition_cleared_at"))
+            await self.mark_resolved(
+                incident_id, f"Rớt mạng ngắn ({inc.get('last_drop_seconds', '?')} giây), dữ liệu đã bình thường"
+                             + (f" từ {back.astimezone(timezone(timedelta(hours=7))):%H:%M:%S}" if back else "")
+                             + f" – {actor} đã tiếp nhận, tắt cảnh báo")
+            return await db.incidents.find_one({"_id": incident_id})
         if not inc or inc["status"] not in ("open",):
             return inc
         now = utcnow()
@@ -183,6 +232,18 @@ class IncidentService:
         if transition in ("triggered", "re-triggered", "warn", "no data"):
             if type_ == "soil_response_high" and not (await db.get_settings())["irrigation"].get("detect_high_response", True):
                 return {"ignored": "soil_response_high_disabled"}       # cảnh báo đã tắt trong Cài đặt
+            if type_ == "device_offline" and not await self.find_active(device_id, type_):
+                dev = await db.devices.find_one({"_id": device_id}, {"online": 1, "last_seen": 1})
+                seen = as_utc((dev or {}).get("last_seen"))
+                if dev and dev.get("online") and seen and (utcnow() - seen).total_seconds() < 30:
+                    # monitor no-data báo trễ trong khi thiết bị đã có dữ liệu lại (rớt ngắn đã được xử lý)
+                    last = await db.incidents.find_one({"device_id": device_id, "type": type_},
+                                                       sort=[("opened_at", -1)])
+                    if last:
+                        await self.add_note(last["_id"], "datadog", "detected",
+                                            "Monitor Datadog báo mất kết nối (trễ) – thiết bị đã có dữ liệu lại, "
+                                            "không mở sự cố mới", **({"link": dd["link"]} if dd.get("link") else {}))
+                    return {"ignored": "device_back_online"}
             inc, created = await self.open_or_update(
                 device_id, type_, payload.get("title") or "Datadog monitor triggered",
                 detected_by="datadog", datadog=dd, context={"scope": payload.get("scope")},

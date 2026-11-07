@@ -31,7 +31,7 @@
   const DETECTORS = { rules: "luật hệ thống", device: "thiết bị", datadog: "Datadog", system: "hệ thống", drill: "diễn tập" };
   const SEVERITY = { critical: ["critical", "Nghiêm trọng"], warning: ["warning", "Cảnh báo"], info: ["idle", "Thông tin"] };
   const TL_ACTIONS = {
-    opened: "Mở sự cố", detected: "Phát hiện thêm", acknowledged: "Tiếp nhận", resolve_requested: "Báo đã xử lý",
+    opened: "Mở sự cố", offline_classified: "Đánh giá lần rớt mạng", detected: "Phát hiện thêm", acknowledged: "Tiếp nhận", resolve_requested: "Báo đã xử lý",
     verification_started: "Bắt đầu kiểm chứng", verified: "Kiểm chứng đạt – đóng sự cố", verification_failed: "Kiểm chứng KHÔNG đạt",
     condition_cleared: "Điều kiện lỗi đã hết", condition_returned: "Lỗi xuất hiện lại", monitor_recovered: "Datadog: monitor OK", note: "Ghi chú",
     datadog_signal: "Đã gửi sang Datadog", datadog_trace: "Datadog APM trace", diagnosis: "Chẩn đoán nguyên nhân",
@@ -256,7 +256,7 @@
       const pts = series.points, to = Date.now(), from = to - S.range * 60000;
       const stepMs = series.bucket_s * 1000;
       const cfg = S.settings;
-      const common = { points: pts, from, to, stepMs };
+      const common = { points: pts, from, to, stepMs, offline: series.offline || [] };
       LineChart.draw($("#ch-temp"), { ...common, key: "air_temp_c", color: "var(--series-temp)", unit: "°C", label: "Nhiệt độ",
         bandKey: "mist_on", bandLabel: "Phun sương", minSpan: 4,
         thresholds: cfg ? [{ v: cfg.mist.hot_temp_c, label: `nóng ${cfg.mist.hot_temp_c}°C` }] : [] });
@@ -281,15 +281,20 @@
     const [sevCls, sevLabel] = SEVERITY[i.severity] || SEVERITY.info;
     const busy = S.busy.has(i._id);
     const dd = i.datadog?.link ? `<a class="chip datadog" href="${esc(i.datadog.link)}" target="_blank" rel="noopener">Mở trong Datadog ↗</a>` : "";
+    // Rớt mạng ngắn, dữ liệu đã bình thường: chỉ là cảnh báo – "Tiếp nhận" là tắt, không cần kiểm chứng
+    const ackCloses = i.ack_closes && i.condition_active === false;
     const actions = i.status === "verifying"
       ? `<span class="small"><span class="spinner"></span> Hệ thống đang chạy thử và đo dữ liệu để kiểm chứng…</span>`
-      : `${i.status === "open" ? `<button data-ack="${i._id}" ${busy ? "disabled" : ""}>Tiếp nhận</button>` : ""}
+      : ackCloses
+        ? `<button class="primary" data-ack="${i._id}" ${busy ? "disabled" : ""}>Tiếp nhận – tắt cảnh báo</button>
+           <span class="small muted">Rớt mạng ngắn, dữ liệu đã bình thường – không cần kiểm chứng</span>`
+        : `${i.status === "open" ? `<button data-ack="${i._id}" ${busy ? "disabled" : ""}>Tiếp nhận</button>` : ""}
          <button class="primary" data-resolve="${i._id}" ${busy ? "disabled" : ""}>Đã xử lý – kiểm chứng</button>`;
     const tl = timelineHtml(i);
     return `<div class="incident ${sevCls}" data-id="${esc(i._id)}">
       <div class="line1">${statusTag(sevCls, sevLabel)}<span class="title">${esc(i.title)}</span>
         <span class="chip">${esc(i.device_id)}</span><span class="chip st-${i.status}">${INC_STATUS[i.status] || i.status}</span>
-        ${i.condition_active === false ? '<span class="chip">dữ liệu đã bình thường</span>' : ""}${dd}</div>
+        ${i.condition_active === false ? '<span class="chip">dữ liệu đã bình thường</span>' : ""}${i.short_drop ? `<span class="chip">rớt mạng ngắn ${esc(i.last_drop_seconds)} giây</span>` : ""}${dd}</div>
       <div class="msg">${esc(i.message)}</div>
       <div class="meta"><span>Mở lúc ${fmtDateTime.format(new Date(i.opened_at))} (${ago(i.opened_at)})</span>
         <span>Phát hiện bởi: ${(i.detected_by || []).map((x) => DETECTORS[x] || x).join(", ")}</span>
@@ -396,7 +401,7 @@
     irrigation: ["Phản hồi đất / lít nước", [["settle_seconds", "Chờ nước thấm sau khi tắt bơm (giây)"], ["before_seconds", "Lấy độ ẩm “trước” trong (giây)"], ["after_window_seconds", "Lấy độ ẩm “sau” trong (giây)"], ["min_baseline_events", "Số lần tưới để học mức bình thường"],
       ["baseline_events", "Số lần tưới gần nhất dùng làm chuẩn"], ["zscore_threshold", "Ngưỡng bất thường |z|"], ["detect_high_response", "Cảnh báo “đất ẩm lên bất thường” (z dương)", "bool"], ["min_liters", "Lượng nước tối thiểu để đánh giá (L)"],
       ["max_start_soil_pct", "Không đánh giá khi đất đã ẩm hơn (%)"], ["test_seconds", "Tưới thử khi kiểm chứng (giây)"]]],
-    health: ["Giám sát", [["offline_after_s", "Coi là offline sau (giây)"], ["stuck_minutes", "Cảm biến đơ sau (phút)"], ["sensor_fail_count", "Số lần đọc lỗi liên tiếp"], ["rssi_weak_dbm", "Wi‑Fi yếu dưới (dBm)"],
+    health: ["Giám sát", [["offline_after_s", "Coi là offline sau (giây)"], ["stuck_minutes", "Cảm biến đơ sau (phút)"], ["sensor_fail_count", "Số lần đọc lỗi liên tiếp"], ["rssi_weak_dbm", "Wi‑Fi yếu dưới (dBm)"], ["short_drop_s", "Rớt mạng ≤ (giây) chỉ là cảnh báo"], ["short_drop_max_per_hour", "…nếu không quá (lần/giờ)"],
       ["low_flow_ratio", "Báo bơm yếu khi lưu lượng < (× mức đã học)"]]],
     ai: ["AI tưới (chế độ AI của bơm)", [["horizon_hours", "Dự báo trước (giờ)"], ["train_days", "Học từ dữ liệu (ngày)"], ["min_samples", "Số mẫu tối thiểu để học"],
       ["retrain_hours", "Học lại định kỳ (giờ)"], ["plan_interval_s", "Lập lại kế hoạch mỗi (giây)"], ["plan_margin_pct", "Chỉ xét tưới khi đất ≤ ngưỡng khô + (%)"],

@@ -23,6 +23,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "min_flow_lpm": 0.3,       # dưới mức này coi như không có nước chảy
         "dry_run_seconds": 60,     # bơm bật mà không có nước quá lâu -> sự cố
         "leak_seconds": 15,        # bơm tắt mà vẫn có dòng chảy quá lâu -> sự cố
+        "verify_seconds": 5,       # chạy thử bơm khi kiểm chứng sửa xong (chạy khô / bơm yếu)
     },
     "mist": {
         "hot_temp_c": 30,
@@ -52,7 +53,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         # Cảnh báo "đất ẩm lên bất thường" (z ≥ ngưỡng): chậu demo ít đất ẩm lên rất nhanh và dao động mạnh
         # -> mặc định TẮT; lần tưới đó được tính là bình thường (vẫn học vào mức chuẩn). Luống thật: bật lại.
         "detect_high_response": False,
-        "test_seconds": 4,         # thời gian tưới thử (chậu demo; luống thật: 15) khi kiểm chứng khắc phục
+        "test_seconds": 3,         # tưới thử khi kiểm chứng "nước không tới gốc" (chậu rất nhỏ: 3; luống thật: 15)
     },
     "health": {
         "offline_after_s": 30,
@@ -60,6 +61,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "sensor_fail_count": 3,
         "rssi_weak_dbm": -80,
         "low_flow_ratio": 0.6,     # lưu lượng < 60% mức bình thường đã học -> tắc một phần / bơm yếu
+        # Rớt mạng NGẮN và ÍT (dữ liệu trở lại bình thường) -> chỉ là cảnh báo, bấm "Tiếp nhận" là tắt;
+        # dài hơn short_drop_s hoặc quá short_drop_max_per_hour lần/giờ -> sự cố nghiêm trọng, cần kiểm chứng
+        "short_drop_s": 120,
+        "short_drop_max_per_hour": 3,
     },
     "ai": {                        # AI tưới (ml.py, ai.py) – dùng khi bơm ở chế độ "AI"
         "horizon_hours": 6,        # dự báo độ ẩm đất 6 giờ tới
