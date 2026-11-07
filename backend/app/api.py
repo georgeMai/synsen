@@ -153,6 +153,7 @@ async def meta():
             "admin_required": bool(settings.admin_token), "sim_api": settings.enable_sim_api,
             "command_ack_timeout_s": settings.command_ack_timeout_s,
             "datadog_app": _dd_app_host() if metrics.enabled else None, "rum": rum_config(),
+            "datadog_dir_dashboard": await _dir_dashboard_path(),
             "datadog_public": settings.dd_public_dashboard_url if settings.dd_public_dashboard_url.startswith("https://") else None}
 
 
@@ -166,6 +167,43 @@ def rum_config() -> dict | None:
             "sessionSampleRate": max(0, min(100, settings.rum_session_sample)),
             "sessionReplaySampleRate": max(0, min(100, settings.rum_replay_sample)),
             "backendService": settings.service}
+
+
+DIR_DASHBOARD_TITLE = "AgriGuard – Detect · Investigate · Resolve"
+_dir_dash_cache: dict = {"at": 0.0, "path": None}
+
+
+def _lookup_dir_dashboard() -> str | None:
+    """Đường dẫn dashboard D-I-R trên Datadog (vd. /dashboard/abc-def-ghi). DD_DIR_DASHBOARD_ID ghi đè; nếu không,
+    tìm theo tiêu đề bằng Datadog API (key chỉ dùng phía server, web chỉ nhận đường dẫn)."""
+    if os.environ.get("DD_DIR_DASHBOARD_ID"):
+        return f"/dashboard/{os.environ['DD_DIR_DASHBOARD_ID'].strip()}"
+    api_key, app_key = os.environ.get("DD_API_KEY"), os.environ.get("DD_APP_KEY")
+    if not (api_key and app_key):
+        return None
+    import json as _json
+    import urllib.request
+    site = (settings.dd_site or "datadoghq.com").strip().lower()
+    req = urllib.request.Request(f"https://api.{site}/api/v1/dashboard",
+                                 headers={"DD-API-KEY": api_key, "DD-APPLICATION-KEY": app_key})
+    try:
+        with urllib.request.urlopen(req, timeout=8) as r:
+            boards = _json.loads(r.read()).get("dashboards", [])
+    except Exception as exc:  # không có mạng / key sai -> web dùng link Metric Explorer như cũ
+        log.warning("Datadog dashboard lookup failed", extra={"error": str(exc)[:160]})
+        return None
+    match = next((b for b in boards if b.get("title") == DIR_DASHBOARD_TITLE), None)
+    return match.get("url") if match else None
+
+
+async def _dir_dashboard_path() -> str | None:
+    import time as _time
+    now = _time.time()
+    ttl = 600 if _dir_dash_cache["path"] else 120
+    if now - _dir_dash_cache["at"] > ttl:
+        _dir_dash_cache["path"] = await asyncio.to_thread(_lookup_dir_dashboard) if metrics.enabled else None
+        _dir_dash_cache["at"] = now
+    return _dir_dash_cache["path"]
 
 
 def _dd_app_host() -> str:

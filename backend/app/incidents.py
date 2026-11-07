@@ -31,6 +31,13 @@ def _dd_entry(note: str, **extra) -> list[dict]:
     return [_entry("datadog", "datadog_signal", note, **extra)] if metrics.enabled else []
 
 
+def _log_step(incident_id: str, action: str, note: str, actor: str) -> None:
+    """Mỗi bước trong dòng thời gian sự cố cũng là một dòng log có mã sự cố TRONG NỘI DUNG, để link "Logs"
+    (tìm "INC-…" trên Datadog) thấy đủ: chẩn đoán, tiếp nhận, báo đã xử lý, kiểm chứng."""
+    log.info("Incident %s [%s]: %s", action, incident_id, (note or "")[:300],
+             extra={"incident_id": incident_id, "incident_action": action, "actor": actor})
+
+
 class IncidentService:
     async def find_active(self, device_id: str, type_: str) -> dict | None:
         return await db.incidents.find_one({"device_id": device_id, "type": type_, "status": {"$in": list(ACTIVE)}})
@@ -88,7 +95,7 @@ class IncidentService:
         metrics.event(f"[AgriGuard] {meta.title} – {device_id}", message,
                       alert_type="error" if meta.severity == "critical" else "warning",
                       tags=[f"device_id:{device_id}", f"incident_type:{type_}", f"incident_id:{doc['_id']}"])
-        log.warning("Incident opened: %s", meta.title,
+        log.warning("Incident opened: %s [%s]", meta.title, doc["_id"],
                     extra={"incident_id": doc["_id"], "device_id": device_id, "incident_type": type_,
                            "detected_by": detected_by, "mttd_s": doc["mttd_s"]})
         return doc, True
@@ -125,6 +132,7 @@ class IncidentService:
             {"_id": incident["_id"]},
             {"$set": sets, "$push": {"drops": {"from": start, "to": now, "seconds": down},
                                      "timeline": _entry("system", "offline_classified", note)}})
+        _log_step(incident["_id"], "offline_classified", note, "system")
         metrics.increment("device.drop_classified", tags={"device_id": incident["device_id"],
                                                            "kind": "short" if short else "long_or_frequent"})
 
@@ -157,6 +165,7 @@ class IncidentService:
         )
         metrics.histogram("incident.time_to_ack_seconds", (now - as_utc(inc["opened_at"])).total_seconds(),
                           tags={"type": inc["type"]})
+        _log_step(incident_id, "acknowledged", note, actor)
         return await db.incidents.find_one({"_id": incident_id})
 
     async def request_resolve(self, incident_id: str, actor: str, note: str = "") -> dict | None:
@@ -171,10 +180,18 @@ class IncidentService:
             {"_id": incident_id},
             {"$set": sets, "$push": {"timeline": _entry(actor, "resolve_requested", note)}},
         )
+        _log_step(incident_id, "resolve_requested", note or "Báo đã xử lý – bắt đầu kiểm chứng", actor)
         return await db.incidents.find_one({"_id": incident_id})
 
     async def add_note(self, incident_id: str, actor: str, action: str, note: str, **extra) -> None:
         await db.incidents.update_one({"_id": incident_id}, {"$push": {"timeline": _entry(actor, action, note, **extra)}})
+        _log_step(incident_id, action, note, actor)
+        if action == "diagnosis":          # chẩn đoán nguyên nhân -> cũng thành Datadog Event của sự cố
+            inc = await db.incidents.find_one({"_id": incident_id}, {"device_id": 1, "type": 1})
+            if inc:
+                metrics.event(f"[AgriGuard] Chẩn đoán – {incident_id}", note, alert_type="info",
+                              tags=[f"device_id:{inc['device_id']}", f"incident_type:{inc['type']}",
+                                    f"incident_id:{incident_id}"])
 
     async def mark_resolved(self, incident_id: str, evidence: str) -> None:
         inc = await db.incidents.find_one({"_id": incident_id})
@@ -197,7 +214,7 @@ class IncidentService:
         metrics.event(f"[AgriGuard] Đã khắc phục: {inc['title']} – {inc['device_id']}",
                       f"{evidence}. MTTR {mttr}s", alert_type="success",
                       tags=[f"device_id:{inc['device_id']}", f"incident_type:{inc['type']}", f"incident_id:{incident_id}"])
-        log.info("Incident resolved", extra={"incident_id": incident_id, "device_id": inc["device_id"],
+        log.info("Incident resolved [%s]: %s", incident_id, evidence, extra={"incident_id": incident_id, "device_id": inc["device_id"],
                                              "incident_type": inc["type"], "mttr_s": mttr})
 
     async def verification_failed(self, incident_id: str, reason: str) -> None:
@@ -216,7 +233,7 @@ class IncidentService:
         metrics.event(f"[AgriGuard] Kiểm chứng KHÔNG đạt – {incident_id}", reason, alert_type="warning",
                       tags=[f"device_id:{inc.get('device_id')}", f"incident_type:{inc.get('type')}",
                             f"incident_id:{incident_id}"])
-        log.warning("Incident verification failed", extra={
+        log.warning("Incident verification failed [%s]: %s", incident_id, reason, extra={
             "incident_event": "verification_failed", "incident_id": incident_id, "device_id": inc.get("device_id"),
             "incident_type": inc.get("type"), "verification_failures": inc.get("verification_failures"),
             "reason": reason})

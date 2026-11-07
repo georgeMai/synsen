@@ -337,7 +337,9 @@
     const pubHtml = pub ? `<div class="ddlinks"><span class="small muted">Không cần đăng nhập:</span><a class="chip datadog public" href="${esc(
       `${pub}${pub.includes("?") ? "&" : "?"}tpl_var_device_id=${q(i.device_id)}&from_ts=${from}&to_ts=${to}&live=false`)}" target="_blank" rel="noopener">Dashboard Datadog công khai ↗</a></div>` : "";
     if (!app) return pubHtml;
+    const dir = S.meta?.datadog_dir_dashboard;   // dashboard D-I-R: bơm vs lưu lượng, nguyên nhân, MTTR… lọc sẵn
     const links = [
+      ...(dir ? [["Dashboard D-I-R", `https://${app}${dir}?tpl_var_device_id=${q(i.device_id)}&from_ts=${from}&to_ts=${to}&live=false`]] : []),
       ["Monitor", `https://${app}/monitors/manage?q=${q(`tag:"incident_type:${i.type}"`)}`],
       ["Logs", `https://${app}/logs?query=${q(`"${i._id}"`)}&from_ts=${from}&to_ts=${to}&live=false`],
       ["Sự kiện", `https://${app}/event/explorer?query=${q(`incident_id:${i._id}`)}&from_ts=${from}&to_ts=${to}&live=false`],
