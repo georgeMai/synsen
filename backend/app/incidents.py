@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from typing import Any
 
 from .db import as_utc, db, utcnow
@@ -24,18 +24,6 @@ ACTIVE = ("open", "acknowledged", "verifying")
 
 def _entry(actor: str, action: str, note: str = "", **extra) -> dict:
     return {"at": utcnow(), "actor": actor, "action": action, "note": note, **extra}
-
-
-def _dd_entry(note: str, **extra) -> list[dict]:
-    """Mục dòng thời gian ghi lại những gì AgriGuard đã gửi sang Datadog (chỉ khi Datadog đang bật)."""
-    return [_entry("datadog", "datadog_signal", note, **extra)] if metrics.enabled else []
-
-
-def _log_step(incident_id: str, action: str, note: str, actor: str) -> None:
-    """Mỗi bước trong dòng thời gian sự cố cũng là một dòng log có mã sự cố TRONG NỘI DUNG, để link "Logs"
-    (tìm "INC-…" trên Datadog) thấy đủ: chẩn đoán, tiếp nhận, báo đã xử lý, kiểm chứng."""
-    log.info("Incident %s [%s]: %s", action, incident_id, (note or "")[:300],
-             extra={"incident_id": incident_id, "incident_action": action, "actor": actor})
 
 
 class IncidentService:
@@ -55,14 +43,9 @@ class IncidentService:
             pushes = []
             if detected_by not in existing.get("detected_by", []):
                 update["$addToSet"] = {"detected_by": detected_by}
-                pushes.append(_entry(detected_by, "detected", message, **({"link": datadog["link"]}
-                                                                         if datadog and datadog.get("link") else {})))
+                pushes.append(_entry(detected_by, "detected", message))
             elif not existing.get("condition_active", True):
                 pushes.append(_entry("system", "condition_returned", message))
-                if type_ == "device_offline":       # rớt lại lần nữa -> đếm lần rớt, bỏ trạng thái "cảnh báo ngắn"
-                    update["$set"].update(drop_started_at=as_utc(started_at) or now, ack_closes=False,
-                                          short_drop=False, severity=incident_type(type_).severity)
-                    update["$inc"] = {"drop_count": 1}
             if datadog:
                 update["$set"]["datadog"] = {**existing.get("datadog", {}), **datadog}
             if pushes:
@@ -81,11 +64,6 @@ class IncidentService:
             "mttd_s": max(0, round((now - started).total_seconds())),
             "timeline": [_entry(detected_by, "opened", message)],
         }
-        if type_ == "device_offline":
-            doc.update(drop_started_at=started, drop_count=1, drops=[])
-        doc["timeline"] += _dd_entry(
-            "Gửi sự kiện lên Event Stream, log WARNING \"Incident opened\", metric incident.opened & mttd_seconds "
-            "– monitor và dashboard thấy sự cố này", signals=["event", "log", "metric"])
         if datadog:
             doc["datadog"] = datadog
         await db.incidents.insert_one(doc)
@@ -95,7 +73,7 @@ class IncidentService:
         metrics.event(f"[AgriGuard] {meta.title} – {device_id}", message,
                       alert_type="error" if meta.severity == "critical" else "warning",
                       tags=[f"device_id:{device_id}", f"incident_type:{type_}", f"incident_id:{doc['_id']}"])
-        log.warning("Incident opened: %s [%s]", meta.title, doc["_id"],
+        log.warning("Incident opened: %s", meta.title,
                     extra={"incident_id": doc["_id"], "device_id": device_id, "incident_type": type_,
                            "detected_by": detected_by, "mttd_s": doc["mttd_s"]})
         return doc, True
@@ -109,52 +87,8 @@ class IncidentService:
                                               "Dữ liệu không còn cho thấy lỗi – chờ người vận hành xác nhận")}},
             )
 
-    async def close_offline_drop(self, incident: dict, health: dict) -> None:
-        """Thiết bị vừa có dữ liệu trở lại: ghi khoảng mất kết nối; rớt NGẮN và ÍT -> hạ xuống cảnh báo
-        (người vận hành bấm "Tiếp nhận" là tắt, không cần kiểm chứng)."""
-        now = utcnow()
-        start = as_utc(incident.get("drop_started_at") or incident["fault_started_at"])
-        down = max(0, round((now - start).total_seconds()))
-        others = await db.incidents.count_documents({
-            "device_id": incident["device_id"], "type": "device_offline", "_id": {"$ne": incident["_id"]},
-            "opened_at": {"$gte": now - timedelta(hours=1)}})
-        drops_1h = others + int(incident.get("drop_count", 1))
-        short = down <= int(health.get("short_drop_s", 120)) and drops_1h <= int(health.get("short_drop_max_per_hour", 3))
-        sets: dict[str, Any] = {"short_drop": short, "ack_closes": short, "last_drop_seconds": down}
-        if short:
-            sets["severity"] = "warning"
-            note = (f"Kết nối trở lại sau {down} giây, dữ liệu bình thường ({drops_1h} lần rớt trong 1 giờ) – "
-                    "hạ xuống CẢNH BÁO rớt mạng ngắn. Bấm \"Tiếp nhận\" để tắt cảnh báo.")
-        else:
-            why = f"mất {down} giây" if down > int(health.get("short_drop_s", 120)) else f"{drops_1h} lần rớt trong 1 giờ"
-            note = f"Kết nối trở lại nhưng {why} – giữ mức NGHIÊM TRỌNG, cần xử lý và kiểm chứng."
-        await db.incidents.update_one(
-            {"_id": incident["_id"]},
-            {"$set": sets, "$push": {"drops": {"from": start, "to": now, "seconds": down},
-                                     "timeline": _entry("system", "offline_classified", note)}})
-        _log_step(incident["_id"], "offline_classified", note, "system")
-        metrics.increment("device.drop_classified", tags={"device_id": incident["device_id"],
-                                                           "kind": "short" if short else "long_or_frequent"})
-
     async def acknowledge(self, incident_id: str, actor: str, note: str = "") -> dict | None:
         inc = await db.incidents.find_one({"_id": incident_id})
-        if inc and inc.get("ack_closes") and not inc.get("condition_active", True) \
-                and inc["status"] in ("open", "acknowledged"):
-            # Cảnh báo rớt mạng ngắn: dữ liệu đã bình thường -> "Tiếp nhận" = tắt cảnh báo (đóng sự cố)
-            now = utcnow()
-            if inc["status"] == "open":
-                await db.incidents.update_one(
-                    {"_id": incident_id},
-                    {"$set": {"status": "acknowledged", "acknowledged_at": now, "acknowledged_by": actor},
-                     "$push": {"timeline": _entry(actor, "acknowledged", note or "Tiếp nhận cảnh báo rớt mạng ngắn")}})
-                metrics.histogram("incident.time_to_ack_seconds", (now - as_utc(inc["opened_at"])).total_seconds(),
-                                  tags={"type": inc["type"]})
-            back = as_utc(inc.get("condition_cleared_at"))
-            await self.mark_resolved(
-                incident_id, f"Rớt mạng ngắn ({inc.get('last_drop_seconds', '?')} giây), dữ liệu đã bình thường"
-                             + (f" từ {back.astimezone(timezone(timedelta(hours=7))):%H:%M:%S}" if back else "")
-                             + f" – {actor} đã tiếp nhận, tắt cảnh báo")
-            return await db.incidents.find_one({"_id": incident_id})
         if not inc or inc["status"] not in ("open",):
             return inc
         now = utcnow()
@@ -165,7 +99,6 @@ class IncidentService:
         )
         metrics.histogram("incident.time_to_ack_seconds", (now - as_utc(inc["opened_at"])).total_seconds(),
                           tags={"type": inc["type"]})
-        _log_step(incident_id, "acknowledged", note, actor)
         return await db.incidents.find_one({"_id": incident_id})
 
     async def request_resolve(self, incident_id: str, actor: str, note: str = "") -> dict | None:
@@ -180,18 +113,10 @@ class IncidentService:
             {"_id": incident_id},
             {"$set": sets, "$push": {"timeline": _entry(actor, "resolve_requested", note)}},
         )
-        _log_step(incident_id, "resolve_requested", note or "Báo đã xử lý – bắt đầu kiểm chứng", actor)
         return await db.incidents.find_one({"_id": incident_id})
 
     async def add_note(self, incident_id: str, actor: str, action: str, note: str, **extra) -> None:
         await db.incidents.update_one({"_id": incident_id}, {"$push": {"timeline": _entry(actor, action, note, **extra)}})
-        _log_step(incident_id, action, note, actor)
-        if action == "diagnosis":          # chẩn đoán nguyên nhân -> cũng thành Datadog Event của sự cố
-            inc = await db.incidents.find_one({"_id": incident_id}, {"device_id": 1, "type": 1})
-            if inc:
-                metrics.event(f"[AgriGuard] Chẩn đoán – {incident_id}", note, alert_type="info",
-                              tags=[f"device_id:{inc['device_id']}", f"incident_type:{inc['type']}",
-                                    f"incident_id:{incident_id}"])
 
     async def mark_resolved(self, incident_id: str, evidence: str) -> None:
         inc = await db.incidents.find_one({"_id": incident_id})
@@ -203,10 +128,7 @@ class IncidentService:
             {"_id": incident_id},
             {"$set": {"status": "resolved", "resolved_at": now, "mttr_s": mttr, "verification": evidence,
                       "condition_active": False},
-             "$push": {"timeline": {"$each": [_entry("system", "verified", evidence)] + _dd_entry(
-                 f"Gửi sự kiện \"Đã khắc phục\" (success), log \"Incident resolved\", metric incident.resolved & "
-                 f"mttr_seconds = {mttr}s – monitor Datadog sẽ tự về OK khi metric bình thường",
-                 signals=["event", "log", "metric"])}}},
+             "$push": {"timeline": _entry("system", "verified", evidence)}},
         )
         tags = {"device_id": inc["device_id"], "type": inc["type"], "severity": inc["severity"]}
         metrics.increment("incident.resolved", tags=tags)
@@ -214,7 +136,7 @@ class IncidentService:
         metrics.event(f"[AgriGuard] Đã khắc phục: {inc['title']} – {inc['device_id']}",
                       f"{evidence}. MTTR {mttr}s", alert_type="success",
                       tags=[f"device_id:{inc['device_id']}", f"incident_type:{inc['type']}", f"incident_id:{incident_id}"])
-        log.info("Incident resolved [%s]: %s", incident_id, evidence, extra={"incident_id": incident_id, "device_id": inc["device_id"],
+        log.info("Incident resolved", extra={"incident_id": incident_id, "device_id": inc["device_id"],
                                              "incident_type": inc["type"], "mttr_s": mttr})
 
     async def verification_failed(self, incident_id: str, reason: str) -> None:
@@ -222,21 +144,11 @@ class IncidentService:
             {"_id": incident_id},
             {"$set": {"status": "acknowledged"},
              "$inc": {"verification_failures": 1},
-             "$push": {"timeline": {"$each": [_entry("system", "verification_failed", reason)] + _dd_entry(
-                 "Gửi sự kiện \"Kiểm chứng không đạt\", log WARNING \"Incident verification failed\" (log monitor "
-                 "đếm số lần), metric incident.verification_failed", signals=["event", "log", "metric"])}}},
+             "$push": {"timeline": _entry("system", "verification_failed", reason)}},
         )
-        inc = await db.incidents.find_one({"_id": incident_id}, {"type": 1, "device_id": 1, "verification_failures": 1})
-        inc = inc or {}
-        metrics.increment("incident.verification_failed", tags={"type": inc.get("type")})
-        # incident_event: trường cố định để log monitor "đóng sự cố khi chưa sửa" đếm chính xác
-        metrics.event(f"[AgriGuard] Kiểm chứng KHÔNG đạt – {incident_id}", reason, alert_type="warning",
-                      tags=[f"device_id:{inc.get('device_id')}", f"incident_type:{inc.get('type')}",
-                            f"incident_id:{incident_id}"])
-        log.warning("Incident verification failed [%s]: %s", incident_id, reason, extra={
-            "incident_event": "verification_failed", "incident_id": incident_id, "device_id": inc.get("device_id"),
-            "incident_type": inc.get("type"), "verification_failures": inc.get("verification_failures"),
-            "reason": reason})
+        inc = await db.incidents.find_one({"_id": incident_id}, {"type": 1, "device_id": 1})
+        metrics.increment("incident.verification_failed", tags={"type": (inc or {}).get("type")})
+        log.warning("Incident verification failed", extra={"incident_id": incident_id, "reason": reason})
 
     async def on_datadog_webhook(self, payload: dict) -> dict:
         """Payload do webhook Datadog gửi (định nghĩa trong datadog/bootstrap.py)."""
@@ -247,34 +159,17 @@ class IncidentService:
         dd = {k: payload.get(k) for k in ("monitor_id", "link", "title") if payload.get(k)}
         dd["last_transition"] = transition
         if transition in ("triggered", "re-triggered", "warn", "no data"):
-            if type_ == "soil_response_high" and not (await db.get_settings())["irrigation"].get("detect_high_response", True):
-                return {"ignored": "soil_response_high_disabled"}       # cảnh báo đã tắt trong Cài đặt
-            if type_ == "device_offline" and not await self.find_active(device_id, type_):
-                dev = await db.devices.find_one({"_id": device_id}, {"online": 1, "last_seen": 1})
-                seen = as_utc((dev or {}).get("last_seen"))
-                if dev and dev.get("online") and seen and (utcnow() - seen).total_seconds() < 30:
-                    # monitor no-data báo trễ trong khi thiết bị đã có dữ liệu lại (rớt ngắn đã được xử lý)
-                    last = await db.incidents.find_one({"device_id": device_id, "type": type_},
-                                                       sort=[("opened_at", -1)])
-                    if last:
-                        await self.add_note(last["_id"], "datadog", "detected",
-                                            "Monitor Datadog báo mất kết nối (trễ) – thiết bị đã có dữ liệu lại, "
-                                            "không mở sự cố mới", **({"link": dd["link"]} if dd.get("link") else {}))
-                    return {"ignored": "device_back_online"}
             inc, created = await self.open_or_update(
                 device_id, type_, payload.get("title") or "Datadog monitor triggered",
                 detected_by="datadog", datadog=dd, context={"scope": payload.get("scope")},
             )
             return {"incident_id": inc["_id"], "created": created}
         if transition in ("recovered", "no data recovered"):
-            inc = await self.find_active(device_id, type_) or await db.incidents.find_one(
-                {"device_id": device_id, "type": type_, "status": "resolved"}, sort=[("resolved_at", -1)])
+            inc = await self.find_active(device_id, type_)
             if inc:
                 await db.incidents.update_one({"_id": inc["_id"]}, {"$set": {"datadog": {**inc.get("datadog", {}), **dd}}})
                 await self.add_note(inc["_id"], "datadog", "monitor_recovered",
-                                    "Monitor Datadog đã trở về OK – xác nhận độc lập: lỗi đã hết" if inc["status"] == "resolved"
-                                    else "Monitor Datadog đã trở về OK – chờ người vận hành xác nhận",
-                                    **({"link": payload["link"]} if payload.get("link") else {}))
+                                    "Monitor Datadog đã trở về OK – chờ người vận hành xác nhận")
                 return {"incident_id": inc["_id"], "created": False}
         return {"ignored": transition}
 
