@@ -32,6 +32,8 @@ class Settings:
     mongodb_uri: str = field(default_factory=lambda: _env("MONGODB_URI", "mongodb://localhost:27017"))
     mongodb_db: str = field(default_factory=lambda: _env("MONGODB_DB", "agriguard"))
     telemetry_ttl_days: int = field(default_factory=lambda: _int("TELEMETRY_TTL_DAYS", 30))
+    forecast_ttl_days: int = field(default_factory=lambda: _int("FORECAST_TTL_DAYS", 3))
+    ai_interval_s: float = field(default_factory=lambda: float(_env("AI_INTERVAL_S", "60")))
 
     mqtt_host: str = field(default_factory=lambda: _env("MQTT_HOST", "localhost"))
     mqtt_port: int = field(default_factory=lambda: _int("MQTT_PORT", 1883))
@@ -43,11 +45,27 @@ class Settings:
     metrics_enabled: bool = field(default_factory=lambda: _bool("METRICS_ENABLED", False))
     statsd_host: str = field(default_factory=lambda: _env("DD_AGENT_HOST", "localhost"))
     statsd_port: int = field(default_factory=lambda: _int("DD_DOGSTATSD_PORT", 8125))
+    dd_site: str = field(default_factory=lambda: _env("DD_SITE", "datadoghq.com"))
+    # Datadog RUM cho web (Digital Experience → Add an Application → JS). Client token được thiết kế để nằm trong
+    # trình duyệt (chỉ gửi được dữ liệu RUM, không đọc được gì), nhưng vẫn để trong .env, không commit.
+    rum_application_id: str = field(default_factory=lambda: _env("DD_RUM_APPLICATION_ID", ""))
+    rum_client_token: str = field(default_factory=lambda: _env("DD_RUM_CLIENT_TOKEN", ""))
+    rum_session_sample: int = field(default_factory=lambda: _int("DD_RUM_SESSION_SAMPLE", 100))
+    rum_replay_sample: int = field(default_factory=lambda: _int("DD_RUM_REPLAY_SAMPLE", 0))
 
     # Bảo vệ API ghi (điều khiển, cài đặt, xử lý sự cố). Để trống = không yêu cầu.
     admin_token: str = field(default_factory=lambda: _env("ADMIN_TOKEN", ""))
     # Token bắt buộc trong URL webhook mà Datadog gọi về.
     webhook_token: str = field(default_factory=lambda: _env("DATADOG_WEBHOOK_TOKEN", ""))
+    public_base_url: str = field(default_factory=lambda: _env("PUBLIC_BASE_URL", ""))
+    # Link chia sẻ công khai của dashboard D-I-R (Datadog: Share → Share dashboard, ai có link cũng xem được,
+    # không cần đăng nhập) – để ban giám khảo kiểm tra. Trống = không hiện nút.
+    dd_public_dashboard_url: str = field(default_factory=lambda: _env("DD_PUBLIC_DASHBOARD_URL", ""))
+    # Chuyển cảnh báo Datadog sang Zalo / WhatsApp (notify.py). Để trống = không gửi.
+    zalo_bot_token: str = field(default_factory=lambda: _env("ZALO_BOT_TOKEN", ""))
+    zalo_chat_id: str = field(default_factory=lambda: _env("ZALO_CHAT_ID", ""))
+    callmebot_phone: str = field(default_factory=lambda: _env("CALLMEBOT_PHONE", ""))
+    callmebot_apikey: str = field(default_factory=lambda: _env("CALLMEBOT_APIKEY", ""))
 
     enable_sim_api: bool = field(default_factory=lambda: _bool("ENABLE_SIM_API", True))
     control_interval_s: int = field(default_factory=lambda: _int("CONTROL_INTERVAL_S", 5))
