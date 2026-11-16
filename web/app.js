@@ -369,20 +369,35 @@
   }
 
   // ------------------------------------------------------------------ tabs
+  const HIST_PAGE_SIZE = 20;
   async function renderHistory() {
-    const [rows, stats] = await Promise.all([api("incidents?status=resolved&limit=50"), api("incidents/stats")]);
+    const page = S.histPage || 0;
+    const [rows, stats] = await Promise.all([
+      api(`incidents?status=resolved&limit=${HIST_PAGE_SIZE}&skip=${page * HIST_PAGE_SIZE}`), api("incidents/stats")]);
+    const total = stats.by_type.reduce((n, s) => n + s.count, 0);
+    const pages = Math.max(1, Math.ceil(total / HIST_PAGE_SIZE));
+    if (page > pages - 1) { S.histPage = pages - 1; return renderHistory(); }   // số sự cố giảm -> về trang cuối
+    const pager = total > HIST_PAGE_SIZE ? `<div class="pager">
+      <button data-hpage="0" ${page === 0 ? "disabled" : ""} title="Trang đầu">«</button>
+      <button data-hpage="${page - 1}" ${page === 0 ? "disabled" : ""}>‹ Trước</button>
+      <span class="small muted">Trang ${page + 1}/${pages} · ${page * HIST_PAGE_SIZE + 1}–${Math.min(total, (page + 1) * HIST_PAGE_SIZE)} của ${total} sự cố</span>
+      <button data-hpage="${page + 1}" ${page >= pages - 1 ? "disabled" : ""}>Sau ›</button>
+      <button data-hpage="${pages - 1}" ${page >= pages - 1 ? "disabled" : ""} title="Trang cuối">»</button></div>` : "";
     const types = S.meta.incident_types;
     const statRows = stats.by_type.map((s) => `<tr><td>${esc(types[s.type]?.title || s.type)}</td><td>${s.count}</td><td>${dur(s.avg_mttd_s)}</td><td>${dur(s.avg_mttr_s)}</td><td>${dur(s.max_mttr_s)}</td></tr>`).join("");
     $("#tab-history").innerHTML = `
       <h3 class="small">Thống kê theo loại sự cố</h3>
       <div class="table-wrap"><table><thead><tr><th>Loại</th><th>Số lần</th><th>MTTD TB</th><th>MTTR TB</th><th>MTTR lớn nhất</th></tr></thead>
       <tbody>${statRows || '<tr><td colspan="5" class="muted">Chưa có sự cố nào được khắc phục</td></tr>'}</tbody></table></div>
-      <h3 class="small">Sự cố đã khắc phục gần đây</h3>
+      <h3 class="small">Sự cố đã khắc phục gần đây</h3>${pager}
       <div class="table-wrap"><table><thead><tr><th>Mã</th><th>Thiết bị</th><th>Loại</th><th>Phát hiện bởi</th><th>Mở</th><th>Đóng</th><th>MTTD</th><th>MTTR</th><th>Bằng chứng kiểm chứng</th></tr></thead>
       <tbody>${rows.map((i) => `<tr><td>${esc(i._id)}</td><td>${esc(i.device_id)}</td><td>${esc(i.title)}</td><td>${(i.detected_by || []).map((x) => DETECTORS[x] || x).join(", ")}</td>
         <td>${fmtDateTime.format(new Date(i.opened_at))}</td><td>${i.resolved_at ? fmtDateTime.format(new Date(i.resolved_at)) : "–"}</td>
         <td>${dur(i.mttd_s)}</td><td>${dur(i.mttr_s)}</td><td>${esc(i.verification || "")}
-        <details><summary class="small">Dòng thời gian (${(i.timeline || []).length})</summary><ul class="timeline">${timelineHtml(i)}</ul>${ddLinks(i)}</details></td></tr>`).join("") || '<tr><td colspan="9" class="muted">Trống</td></tr>'}</tbody></table></div>`;
+        <details><summary class="small">Dòng thời gian (${(i.timeline || []).length})</summary><ul class="timeline">${timelineHtml(i)}</ul>${ddLinks(i)}</details></td></tr>`).join("") || '<tr><td colspan="9" class="muted">Trống</td></tr>'}</tbody></table></div>${pager}`;
+    document.querySelectorAll("#tab-history [data-hpage]").forEach((b) => {
+      b.onclick = () => { S.histPage = Number(b.dataset.hpage); renderHistory().catch(console.warn); };
+    });
   }
 
   function renderCommands() {
@@ -985,7 +1000,8 @@
     setInterval(refresh, 3000);
     setInterval(refreshHealth, 10000);
     setInterval(loadCharts, 5000);
-    setInterval(() => { if (S.tab === "history") renderHistory().catch(() => {}); }, 15000);
+    // Không tự tải lại khi người xem đang mở "Dòng thời gian" của một sự cố (tránh đóng mất)
+    setInterval(() => { if (S.tab === "history" && !$("#tab-history details[open]")) renderHistory().catch(() => {}); }, 15000);
     setInterval(async () => { try { S.settings = await api("settings"); } catch { /* */ } }, 30000);
   }
   boot();

@@ -459,7 +459,7 @@ async def put_settings(body: SettingsIn, actor: str = Depends(require_admin)):
 # ---------------------------------------------------------------- incidents
 @router.get("/incidents")
 async def list_incidents(status: Literal["active", "resolved", "all"] = "active", device_id: Optional[str] = None,
-                         limit: int = Query(100, le=500)):
+                         limit: int = Query(100, le=500), skip: int = Query(0, ge=0, le=100_000)):
     query: dict = {}
     if status == "active":
         query["status"] = {"$in": list(ACTIVE)}
@@ -468,7 +468,7 @@ async def list_incidents(status: Literal["active", "resolved", "all"] = "active"
     if device_id:
         query["device_id"] = device_id
     sort_key = "resolved_at" if status == "resolved" else "opened_at"
-    return await db.incidents.find(query).sort(sort_key, -1).limit(limit).to_list(limit)
+    return await db.incidents.find(query).sort(sort_key, -1).skip(skip).limit(limit).to_list(limit)
 
 
 @router.get("/incidents/stats")
