@@ -13,6 +13,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from .config import settings
 from .db import as_utc, db, utcnow
 from .metrics import metrics
 from .rules import incident_type
@@ -47,7 +48,9 @@ class IncidentService:
 
     async def open_or_update(self, device_id: str, type_: str, message: str, *, detected_by: str,
                              started_at: datetime | None = None, context: dict | None = None,
-                             site: str | None = None, datadog: dict | None = None) -> tuple[dict, bool]:
+                             site: str | None = None, datadog: dict | None = None) -> tuple[dict | None, bool]:
+        if device_id in settings.alert_muted_devices:       # thiết bị đã tắt cảnh báo (ALERT_MUTED_DEVICES)
+            return None, False
         now = utcnow()
         existing = await self.find_active(device_id, type_)
         if existing:
@@ -193,6 +196,19 @@ class IncidentService:
                               tags=[f"device_id:{inc['device_id']}", f"incident_type:{inc['type']}",
                                     f"incident_id:{incident_id}"])
 
+    async def close_muted(self, inc: dict) -> None:
+        """Đóng sự cố của thiết bị đã tắt cảnh báo. KHÔNG tính MTTR, không gửi metric/sự kiện "đã khắc phục"
+        (lỗi chưa được chứng minh là đã sửa) – chỉ ghi lý do vào dòng thời gian."""
+        note = "Đã tắt cảnh báo cho thiết bị này (ALERT_MUTED_DEVICES) – đóng sự cố, không tính MTTR"
+        await db.incidents.update_one(
+            {"_id": inc["_id"], "status": {"$in": list(ACTIVE)}},
+            {"$set": {"status": "resolved", "resolved_at": utcnow(), "resolved_by": "alerts_muted",
+                      "verification": note, "condition_active": False},
+             "$push": {"timeline": _entry("system", "alerts_muted", note)}},
+        )
+        log.info("Incident closed [%s]: alerts muted for %s", inc["_id"], inc["device_id"],
+                 extra={"incident_id": inc["_id"], "device_id": inc["device_id"], "incident_type": inc["type"]})
+
     async def mark_resolved(self, incident_id: str, evidence: str) -> None:
         inc = await db.incidents.find_one({"_id": incident_id})
         if not inc:
@@ -261,6 +277,8 @@ class IncidentService:
                                             "Monitor Datadog báo mất kết nối (trễ) – thiết bị đã có dữ liệu lại, "
                                             "không mở sự cố mới", **({"link": dd["link"]} if dd.get("link") else {}))
                     return {"ignored": "device_back_online"}
+            if device_id in settings.alert_muted_devices:
+                return {"ignored": "device_alerts_muted"}
             inc, created = await self.open_or_update(
                 device_id, type_, payload.get("title") or "Datadog monitor triggered",
                 detected_by="datadog", datadog=dd, context={"scope": payload.get("scope")},

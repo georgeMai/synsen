@@ -53,6 +53,12 @@ class Settings:
     rum_session_sample: int = field(default_factory=lambda: _int("DD_RUM_SESSION_SAMPLE", 100))
     rum_replay_sample: int = field(default_factory=lambda: _int("DD_RUM_REPLAY_SAMPLE", 0))
 
+    # Thiết bị TẮT CẢNH BÁO trên web (cách nhau bởi dấu phẩy, vd. "esp32-01"): vẫn thu dữ liệu, điều khiển, gửi metric
+    # lên Datadog, nhưng không mở sự cố AgriGuard (luật, event thiết bị, lệnh không ack, webhook Datadog) và đóng các sự cố
+    # đang mở của thiết bị đó. Giới hạn an toàn trong firmware vẫn chạy.
+    alert_muted_devices: frozenset = field(default_factory=lambda: frozenset(
+        d.strip() for d in _env("ALERT_MUTED_DEVICES", "").split(",") if d.strip()))
+
     # Bảo vệ API ghi (điều khiển, cài đặt, xử lý sự cố). Để trống = không yêu cầu.
     admin_token: str = field(default_factory=lambda: _env("ADMIN_TOKEN", ""))
     # Token bắt buộc trong URL webhook mà Datadog gọi về.

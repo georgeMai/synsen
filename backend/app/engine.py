@@ -75,6 +75,12 @@ async def health_tick() -> None:
                 if type_ == "device_offline" and was_active:
                     await incidents.close_offline_drop(inc, cfg["health"])
 
+    # Thiết bị đã tắt cảnh báo (ALERT_MUTED_DEVICES) -> đóng các sự cố còn mở của thiết bị đó
+    if settings.alert_muted_devices:
+        for inc in active:
+            if inc["device_id"] in settings.alert_muted_devices and inc["status"] != "verifying":
+                await incidents.close_muted(inc)
+
     # Cảnh báo "đất ẩm lên bất thường" đã TẮT trong Cài đặt (chậu nhỏ) -> đóng các sự cố loại này còn mở
     if not cfg["irrigation"].get("detect_high_response", True):
         for inc in active:
